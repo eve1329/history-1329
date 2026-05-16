@@ -73,6 +73,25 @@ The Windows package:
 
 See [win/README.md](win/README.md) for offline builds, Windows ARM64 builds, and runtime details.
 
+
+## Private Activation
+
+This app can be distributed as a private activated app. The desktop package reads a bundled `license.json` and requires users to activate before history APIs are available.
+
+Generate signing keys:
+
+```bash
+npm run license:keygen
+```
+
+Run the license server on your cloud server:
+
+```bash
+npm run license:server
+```
+
+See [LICENSE-SERVER.md](LICENSE-SERVER.md) for deployment, activation code creation, and release-build instructions.
+
 ## Provider Sync Safety
 
 Provider Sync creates backups under:

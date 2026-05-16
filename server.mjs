@@ -3,11 +3,15 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
+const execFileAsync = promisify(execFile);
 const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const dbPath = process.env.CODEX_HISTORY_DB || path.join(codexHome, "state_5.sqlite");
 const globalStatePath = path.join(codexHome, ".codex-global-state.json");
@@ -15,6 +19,9 @@ const globalStateBackupPath = path.join(codexHome, ".codex-global-state.json.bak
 const configPath = path.join(codexHome, "config.toml");
 const providerSyncBackupRoot = path.join(codexHome, "backups_state", "provider-sync");
 const providerSyncLockDir = path.join(codexHome, "tmp", "provider-sync.lock");
+const appId = "codex-history-viewer";
+const licenseConfigPath = process.env.CODEX_HISTORY_LICENSE_CONFIG || path.join(__dirname, "license.json");
+const licenseStatePath = path.join(codexHome, "license-state.json");
 const host = process.env.HOST || "127.0.0.1";
 const requestedPort = Number.parseInt(process.env.PORT || "3999", 10);
 const port = Number.isInteger(requestedPort) && requestedPort >= 0 && requestedPort <= 65535 ? requestedPort : 3999;
@@ -92,6 +99,328 @@ async function readJsonBody(req) {
     return {};
   }
   return JSON.parse(text);
+}
+
+function base64UrlDecode(value) {
+  return Buffer.from(value, "base64url");
+}
+
+function normalizePem(value) {
+  return String(value || "").replaceAll("\\n", "\n").trim();
+}
+
+function normalizeLicenseKey(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function formatLicenseKey(value) {
+  const key = normalizeLicenseKey(value);
+  if (!key) {
+    return "";
+  }
+  if (key.startsWith("CHV") && key.length > 3) {
+    const rest = key.slice(3).match(/.{1,4}/g)?.join("-") || key.slice(3);
+    return `CHV-${rest}`;
+  }
+  return key.match(/.{1,4}/g)?.join("-") || key;
+}
+
+async function readJsonFileIfPresent(filePath) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function readLicenseConfig() {
+  const envRequired = process.env.CODEX_HISTORY_LICENSE_REQUIRED;
+  const envServerUrl = process.env.CODEX_HISTORY_LICENSE_SERVER_URL;
+  const envPublicKey = process.env.CODEX_HISTORY_LICENSE_PUBLIC_KEY;
+  const config = (await readJsonFileIfPresent(licenseConfigPath)) || {};
+  return {
+    required: envRequired === undefined ? Boolean(config.required) : envRequired !== "0" && envRequired !== "false",
+    serverUrl: String(envServerUrl || config.serverUrl || "").replace(/\/+$/, ""),
+    publicKey: normalizePem(envPublicKey || config.publicKey || ""),
+    configPath: licenseConfigPath
+  };
+}
+
+async function readLicenseState() {
+  const state = await readJsonFileIfPresent(licenseStatePath);
+  return state && typeof state === "object" ? state : {};
+}
+
+async function writeLicenseState(state) {
+  await fs.mkdir(path.dirname(licenseStatePath), { recursive: true });
+  await fs.writeFile(licenseStatePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+async function commandOutput(command, args) {
+  try {
+    const { stdout } = await execFileAsync(command, args, { timeout: 2500, windowsHide: true });
+    return stdout.toString("utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+async function platformMachineSeed() {
+  if (process.platform === "darwin") {
+    const output = await commandOutput("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]);
+    const match = output.match(/"IOPlatformUUID"\s=\s"([^"]+)"/);
+    return match?.[1] || "";
+  }
+  if (process.platform === "win32") {
+    const output = await commandOutput("powershell.exe", [
+      "-NoProfile",
+      "-ExecutionPolicy", "Bypass",
+      "-Command",
+      "(Get-CimInstance Win32_ComputerSystemProduct).UUID"
+    ]);
+    return output.split(/\r?\n/).find(Boolean) || "";
+  }
+  if (process.platform === "linux") {
+    try {
+      return (await fs.readFile("/etc/machine-id", "utf8")).trim();
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+let cachedMachineInfo = null;
+async function machineInfo() {
+  if (cachedMachineInfo) {
+    return cachedMachineInfo;
+  }
+  const seed = await platformMachineSeed();
+  const fallbackSeed = `${os.hostname()}|${os.homedir()}|${process.platform}|${process.arch}`;
+  const machineId = crypto
+    .createHash("sha256")
+    .update(`${appId}|${seed || fallbackSeed}`)
+    .digest("hex");
+  cachedMachineInfo = {
+    machineId,
+    machineLabel: `${os.hostname()} (${process.platform}-${process.arch})`,
+    platform: process.platform,
+    arch: process.arch
+  };
+  return cachedMachineInfo;
+}
+
+function verifyLicenseToken(token, publicKeyPem) {
+  if (!token || !publicKeyPem) {
+    return null;
+  }
+  const parts = String(token).split(".");
+  if (parts.length !== 2) {
+    return null;
+  }
+  try {
+    const payloadBytes = base64UrlDecode(parts[0]);
+    const signature = base64UrlDecode(parts[1]);
+    const publicKey = crypto.createPublicKey(publicKeyPem);
+    if (!crypto.verify(null, payloadBytes, publicKey, signature)) {
+      return null;
+    }
+    const payload = JSON.parse(payloadBytes.toString("utf8"));
+    if (payload.aud !== appId) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function localLicenseSnapshot() {
+  const config = await readLicenseConfig();
+  const state = await readLicenseState();
+  const machine = await machineInfo();
+  if (!config.required) {
+    return {
+      required: false,
+      active: true,
+      reason: "license_not_required",
+      configPath: config.configPath,
+      statePath: licenseStatePath,
+      machine
+    };
+  }
+  if (!config.serverUrl || !config.publicKey) {
+    return {
+      required: true,
+      active: false,
+      reason: "license_not_configured",
+      message: "License is required but license.json is missing serverUrl or publicKey.",
+      configPath: config.configPath,
+      statePath: licenseStatePath,
+      machine
+    };
+  }
+  const payload = verifyLicenseToken(state.token, config.publicKey);
+  if (!payload) {
+    return {
+      required: true,
+      active: false,
+      reason: state.token ? "invalid_token" : "not_activated",
+      configPath: config.configPath,
+      statePath: licenseStatePath,
+      serverUrl: config.serverUrl,
+      machine
+    };
+  }
+  if (payload.machineId !== machine.machineId) {
+    return {
+      required: true,
+      active: false,
+      reason: "machine_mismatch",
+      configPath: config.configPath,
+      statePath: licenseStatePath,
+      serverUrl: config.serverUrl,
+      machine
+    };
+  }
+  if (Date.parse(payload.expiresAt || "") <= Date.now()) {
+    return {
+      required: true,
+      active: false,
+      reason: "token_expired",
+      licenseKey: formatLicenseKey(payload.licenseKey || state.licenseKey),
+      configPath: config.configPath,
+      statePath: licenseStatePath,
+      serverUrl: config.serverUrl,
+      machine
+    };
+  }
+
+  return {
+    required: true,
+    active: true,
+    reason: "activated",
+    licenseKey: formatLicenseKey(payload.licenseKey || state.licenseKey),
+    tokenExpiresAt: payload.expiresAt,
+    maxMachines: payload.maxMachines,
+    machineCount: payload.machineCount,
+    configPath: config.configPath,
+    statePath: licenseStatePath,
+    serverUrl: config.serverUrl,
+    machine
+  };
+}
+
+async function postLicenseServer(config, endpoint, body) {
+  const response = await fetch(`${config.serverUrl}${endpoint}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.error) {
+    const message = payload.error || `License server HTTP ${response.status}`;
+    const error = new Error(message);
+    error.payload = payload;
+    throw error;
+  }
+  return payload;
+}
+
+async function activateLocalLicense(body) {
+  const config = await readLicenseConfig();
+  if (!config.required) {
+    return await localLicenseSnapshot();
+  }
+  if (!config.serverUrl || !config.publicKey) {
+    throw new Error("License server is not configured. Add license.json before building this app.");
+  }
+  const machine = await machineInfo();
+  const licenseKey = normalizeLicenseKey(body.licenseKey);
+  if (!licenseKey) {
+    throw new Error("请输入激活码");
+  }
+  const result = await postLicenseServer(config, "/api/activate", {
+    appId,
+    licenseKey,
+    machineId: machine.machineId,
+    machineLabel: machine.machineLabel
+  });
+  await writeLicenseState({
+    licenseKey,
+    token: result.token,
+    activatedAt: new Date().toISOString(),
+    lastValidatedAt: new Date().toISOString(),
+    serverUrl: config.serverUrl
+  });
+  return await localLicenseSnapshot();
+}
+
+async function refreshLocalLicense() {
+  const config = await readLicenseConfig();
+  const state = await readLicenseState();
+  if (!config.required) {
+    return await localLicenseSnapshot();
+  }
+  if (!state.token && !state.licenseKey) {
+    return await localLicenseSnapshot();
+  }
+  const machine = await machineInfo();
+  const result = await postLicenseServer(config, "/api/validate", {
+    appId,
+    licenseKey: state.licenseKey,
+    token: state.token,
+    machineId: machine.machineId,
+    machineLabel: machine.machineLabel
+  });
+  await writeLicenseState({
+    ...state,
+    licenseKey: normalizeLicenseKey(result.licenseKey || state.licenseKey),
+    token: result.token,
+    lastValidatedAt: new Date().toISOString(),
+    serverUrl: config.serverUrl
+  });
+  return await localLicenseSnapshot();
+}
+
+async function deactivateLocalLicense() {
+  const config = await readLicenseConfig();
+  const state = await readLicenseState();
+  const machine = await machineInfo();
+  if (config.required && config.serverUrl && (state.token || state.licenseKey)) {
+    try {
+      await postLicenseServer(config, "/api/deactivate", {
+        appId,
+        licenseKey: state.licenseKey,
+        token: state.token,
+        machineId: machine.machineId
+      });
+    } catch {
+      // Local deactivation should still clear this machine so the user can retry activation.
+    }
+  }
+  try {
+    await fs.rm(licenseStatePath, { force: true });
+  } catch {
+    // Ignore cleanup failures; status will surface any remaining token problem.
+  }
+  return await localLicenseSnapshot();
+}
+
+async function requireLicense(res) {
+  const snapshot = await localLicenseSnapshot();
+  if (snapshot.active) {
+    return true;
+  }
+  json(res, 402, {
+    error: snapshot.message || "Codex History Viewer 需要激活后使用",
+    code: "license_required",
+    license: snapshot
+  });
+  return false;
 }
 
 async function copyFileIfPresent(sourcePath, destinationPath) {
@@ -1158,9 +1487,44 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    if (url.pathname === "/api/license/status") {
+      if (req.method !== "GET") {
+        badRequest(res, "GET required");
+        return;
+      }
+      json(res, 200, await localLicenseSnapshot());
+      return;
+    }
+    if (url.pathname === "/api/license/activate") {
+      if (req.method !== "POST") {
+        badRequest(res, "POST required");
+        return;
+      }
+      json(res, 200, await activateLocalLicense(await readJsonBody(req)));
+      return;
+    }
+    if (url.pathname === "/api/license/refresh") {
+      if (req.method !== "POST") {
+        badRequest(res, "POST required");
+        return;
+      }
+      json(res, 200, await refreshLocalLicense());
+      return;
+    }
+    if (url.pathname === "/api/license/deactivate") {
+      if (req.method !== "POST") {
+        badRequest(res, "POST required");
+        return;
+      }
+      json(res, 200, await deactivateLocalLicense());
+      return;
+    }
     if (url.pathname === "/api/threads") {
       if (req.method !== "GET") {
         badRequest(res, "GET required");
+        return;
+      }
+      if (!(await requireLicense(res))) {
         return;
       }
       json(res, 200, listThreads(url));
@@ -1171,12 +1535,18 @@ const server = http.createServer(async (req, res) => {
         badRequest(res, "POST required");
         return;
       }
+      if (!(await requireLicense(res))) {
+        return;
+      }
       json(res, 200, await promoteProject(await readJsonBody(req)));
       return;
     }
     if (url.pathname === "/api/provider-sync/status") {
       if (req.method !== "GET") {
         badRequest(res, "GET required");
+        return;
+      }
+      if (!(await requireLicense(res))) {
         return;
       }
       json(res, 200, await providerSyncStatus());
@@ -1187,12 +1557,18 @@ const server = http.createServer(async (req, res) => {
         badRequest(res, "POST required");
         return;
       }
+      if (!(await requireLicense(res))) {
+        return;
+      }
       json(res, 200, await syncProvider(await readJsonBody(req)));
       return;
     }
     if (url.pathname === "/api/facets") {
       if (req.method !== "GET") {
         badRequest(res, "GET required");
+        return;
+      }
+      if (!(await requireLicense(res))) {
         return;
       }
       json(res, 200, listFacets());

@@ -461,3 +461,135 @@ h1 {
     white-space: normal;
   }
 }
+
+.app-shell[hidden],
+.license-gate[hidden] {
+  display: none !important;
+}
+
+.license-gate {
+  min-height: calc(100vh - 48px);
+  display: grid;
+  place-items: center;
+  padding: 32px 16px;
+}
+
+.license-card {
+  width: min(560px, 100%);
+  border: 1px solid #d7dde7;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top left, rgba(49, 120, 198, 0.14), transparent 34%),
+    linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  box-shadow: 0 24px 70px rgba(29, 36, 48, 0.14);
+  padding: 30px;
+}
+
+.license-kicker {
+  color: #3178c6;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.license-card h1 {
+  font-size: 30px;
+  letter-spacing: -0.02em;
+}
+
+.license-card p {
+  color: #465162;
+  line-height: 1.6;
+  margin: 12px 0 22px;
+}
+
+.license-form {
+  display: grid;
+  gap: 12px;
+}
+
+.license-form label {
+  display: grid;
+  gap: 7px;
+  color: #4b5565;
+  font-size: 12px;
+}
+
+.license-form input {
+  min-height: 44px;
+  border: 1px solid #cfd6e2;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1d2430;
+  padding: 10px 12px;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.license-form button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 10px;
+  background: #1f6fb8;
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.license-form button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.license-status {
+  min-height: 20px;
+  margin-top: 14px;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.license-status.success {
+  color: #116329;
+}
+
+.license-status.error {
+  color: #b42318;
+}
+
+.license-meta {
+  display: grid;
+  gap: 5px;
+  margin-top: 18px;
+  color: #667085;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.license-inline {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  color: #667085;
+  font-size: 12px;
+}
+
+.license-inline[hidden] {
+  display: none !important;
+}
+
+.license-inline button {
+  border: 1px solid #cfd6e2;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #465162;
+  min-height: 26px;
+  padding: 3px 9px;
+  cursor: pointer;
+  font-size: 12px;
+}

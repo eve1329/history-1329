@@ -81,6 +81,10 @@ Write-Host "Copying viewer files..."
 Copy-Item (Join-Path $RootDir "package.json") (Join-Path $ViewerDir "package.json") -Force
 Copy-Item (Join-Path $RootDir "server.mjs") (Join-Path $ViewerDir "server.mjs") -Force
 Copy-DirectoryContents -Source (Join-Path $RootDir "public") -Destination (Join-Path $ViewerDir "public")
+$licenseConfig = Join-Path $RootDir "license.json"
+if (Test-Path $licenseConfig) {
+  Copy-Item $licenseConfig (Join-Path $ViewerDir "license.json") -Force
+}
 
 $nodeExtractRoot = Join-Path $CacheDir $nodeArchiveName
 if (Test-Path $nodeExtractRoot) {

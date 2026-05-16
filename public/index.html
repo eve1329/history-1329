@@ -8,10 +8,35 @@
   </head>
   <body>
     <main class="shell">
+      <section id="licenseGate" class="license-gate" hidden>
+        <div class="license-card">
+          <div class="license-kicker">Private App</div>
+          <h1>激活 Codex History Viewer</h1>
+          <p id="licenseMessage">这个版本需要激活后使用。一个激活码最多可绑定 2 台机器。</p>
+          <form id="licenseForm" class="license-form">
+            <label>
+              <span>激活码</span>
+              <input id="licenseKey" type="text" inputmode="latin" autocomplete="off" placeholder="CHV-XXXX-XXXX-XXXX-XXXX" required>
+            </label>
+            <button id="activateLicense" type="submit">激活</button>
+          </form>
+          <div id="licenseStatus" class="license-status"></div>
+          <div class="license-meta">
+            <div>机器：<span id="licenseMachine">Loading...</span></div>
+            <div>服务器：<span id="licenseServer">未配置</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="appShell" class="app-shell" hidden>
       <header class="topbar">
         <div>
           <h1>Codex History</h1>
           <p id="dbPath">Loading...</p>
+          <div id="licenseInline" class="license-inline" hidden>
+            <span id="licenseInlineText"></span>
+            <button id="deactivateLicense" type="button">解绑本机</button>
+          </div>
         </div>
         <div class="summary" id="summary"></div>
       </header>
@@ -70,6 +95,7 @@
           </div>
           <div id="threads"></div>
         </section>
+      </section>
       </section>
     </main>
     <script src="./app.js" type="module"></script>

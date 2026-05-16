@@ -18,3 +18,7 @@ pnpm-debug.log*
 # Local environment overrides
 .env
 .env.*
+
+# Private license configuration and server data
+license.json
+license-server.sqlite*

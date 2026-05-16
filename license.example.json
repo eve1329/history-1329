@@ -1,0 +1,5 @@
+{
+  "required": true,
+  "serverUrl": "https://your-license-server.example.com",
+  "publicKey": "-----BEGIN PUBLIC KEY-----\nreplace-with-your-ed25519-public-key\n-----END PUBLIC KEY-----\n"
+}

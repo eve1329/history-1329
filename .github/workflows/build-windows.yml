@@ -23,6 +23,15 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
+      - name: Write private license config
+        shell: pwsh
+        env:
+          LICENSE_CONFIG_JSON: ${{ secrets.LICENSE_CONFIG_JSON }}
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:LICENSE_CONFIG_JSON)) {
+            Set-Content -Path .\license.json -Value $env:LICENSE_CONFIG_JSON -Encoding UTF8
+          }
+
       - name: Build Windows package
         shell: pwsh
         run: .\win\build-windows.ps1 -Runtime win-x64

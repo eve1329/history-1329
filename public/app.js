@@ -1,4 +1,5 @@
 const state = {
+  license: null,
   facets: null,
   providerSync: null,
   rows: [],
@@ -12,6 +13,18 @@ const state = {
 const apiBase = window.location.protocol === "file:" ? "http://127.0.0.1:3999" : "";
 
 const elements = {
+  licenseGate: document.querySelector("#licenseGate"),
+  appShell: document.querySelector("#appShell"),
+  licenseForm: document.querySelector("#licenseForm"),
+  licenseKey: document.querySelector("#licenseKey"),
+  activateLicense: document.querySelector("#activateLicense"),
+  licenseStatus: document.querySelector("#licenseStatus"),
+  licenseMessage: document.querySelector("#licenseMessage"),
+  licenseMachine: document.querySelector("#licenseMachine"),
+  licenseServer: document.querySelector("#licenseServer"),
+  licenseInline: document.querySelector("#licenseInline"),
+  licenseInlineText: document.querySelector("#licenseInlineText"),
+  deactivateLicense: document.querySelector("#deactivateLicense"),
   dbPath: document.querySelector("#dbPath"),
   summary: document.querySelector("#summary"),
   query: document.querySelector("#query"),
@@ -84,6 +97,64 @@ function providerTotal(counts) {
   return Object.values(counts || {}).reduce((total, value) => total + Number(value || 0), 0);
 }
 
+function renderLicenseInline() {
+  const license = state.license;
+  if (!license?.active || !license.required) {
+    elements.licenseInline.hidden = true;
+    return;
+  }
+  elements.licenseInline.hidden = false;
+  const expires = license.tokenExpiresAt ? `，离线凭证到期：${formatDate(Date.parse(license.tokenExpiresAt))}` : "";
+  elements.licenseInlineText.textContent = `已激活 ${license.licenseKey || ""}，机器 ${license.machineCount || 1}/${license.maxMachines || 2}${expires}`;
+}
+
+function renderLicenseStatus(message = "") {
+  const license = state.license;
+  const machine = license?.machine;
+  elements.licenseMachine.textContent = machine?.machineLabel || machine?.machineId?.slice(0, 12) || "未知";
+  elements.licenseServer.textContent = license?.serverUrl || "未配置";
+  elements.licenseStatus.textContent = message || license?.message || "";
+  elements.licenseStatus.className = `license-status ${license?.active ? "success" : license?.reason === "license_not_configured" ? "error" : ""}`;
+
+  if (license?.active) {
+    elements.licenseMessage.textContent = license.required
+      ? `已激活：${license.licenseKey || "当前机器"}。可用机器 ${license.machineCount || 1}/${license.maxMachines || 2}。`
+      : "当前构建未启用激活限制。";
+    elements.licenseGate.hidden = true;
+    elements.appShell.hidden = false;
+    renderLicenseInline();
+    return;
+  }
+
+  elements.licenseGate.hidden = false;
+  elements.appShell.hidden = true;
+  elements.licenseInline.hidden = true;
+  if (license?.reason === "license_not_configured") {
+    elements.licenseMessage.textContent = "此构建要求激活，但没有内置授权服务器配置。请联系发布者重新打包。";
+    elements.activateLicense.disabled = true;
+  } else {
+    elements.licenseMessage.textContent = "这个版本需要激活后使用。一个激活码最多可绑定 2 台机器。";
+    elements.activateLicense.disabled = false;
+  }
+}
+
+function licenseErrorMessage(error) {
+  const payload = error.payload || {};
+  if (payload.code === "machine_limit_reached") {
+    return `这枚激活码已经绑定 ${payload.machineCount}/${payload.maxMachines} 台机器，不能继续激活。`;
+  }
+  if (payload.code === "license_not_found") {
+    return "激活码不存在，请检查后重试。";
+  }
+  if (payload.code === "license_disabled") {
+    return "激活码已被禁用，请联系发布者。";
+  }
+  if (payload.code === "license_expired") {
+    return "激活码已过期，请联系发布者。";
+  }
+  return error.message;
+}
+
 function formatProviderCounts(counts) {
   const entries = Object.entries(counts || {}).filter(([, count]) => Number(count) > 0);
   if (entries.length === 0) {
@@ -107,12 +178,14 @@ async function requestJson(url) {
   const response = await fetch(`${apiBase}${url}`, { cache: "no-store" });
   const payload = await response.json();
   if (!response.ok || payload.error) {
-    throw new Error(payload.error || `HTTP ${response.status}`);
+    const error = new Error(payload.error || `HTTP ${response.status}`);
+    error.payload = payload;
+    throw error;
   }
   return payload;
 }
 
-async function postJson(url, body) {
+async function postJson(url, body = {}) {
   const response = await fetch(`${apiBase}${url}`, {
     method: "POST",
     headers: {
@@ -122,7 +195,9 @@ async function postJson(url, body) {
   });
   const payload = await response.json();
   if (!response.ok || payload.error) {
-    throw new Error(payload.error || `HTTP ${response.status}`);
+    const error = new Error(payload.error || `HTTP ${response.status}`);
+    error.payload = payload;
+    throw error;
   }
   return payload;
 }
@@ -350,6 +425,47 @@ async function resetAndLoad() {
   await loadThreads();
 }
 
+elements.licenseForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const licenseKey = elements.licenseKey.value.trim();
+  if (!licenseKey) {
+    renderLicenseStatus("请输入激活码。");
+    return;
+  }
+
+  elements.activateLicense.disabled = true;
+  renderLicenseStatus("正在连接授权服务器并激活...");
+  try {
+    state.license = await postJson("/api/license/activate", { licenseKey });
+    renderLicenseStatus("激活成功，正在加载历史...");
+    await bootApp();
+  } catch (error) {
+    elements.licenseStatus.textContent = licenseErrorMessage(error);
+    elements.licenseStatus.className = "license-status error";
+  } finally {
+    elements.activateLicense.disabled = false;
+  }
+});
+
+elements.deactivateLicense.addEventListener("click", async () => {
+  const ok = window.confirm("解绑这台机器？解绑后本机需要重新激活才能继续使用，但会释放一个机器名额。");
+  if (!ok) {
+    return;
+  }
+  elements.deactivateLicense.disabled = true;
+  try {
+    state.license = await postJson("/api/license/deactivate");
+    state.facets = null;
+    state.providerSync = null;
+    state.rows = [];
+    renderLicenseStatus("已解绑本机。");
+  } catch (error) {
+    window.alert(error.message);
+  } finally {
+    elements.deactivateLicense.disabled = false;
+  }
+});
+
 elements.projectList.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-cwd]");
   if (!button) {
@@ -457,6 +573,29 @@ elements.threads.addEventListener("click", async (event) => {
   }, 900);
 });
 
-await loadFacets();
-await loadProviderSyncStatus();
-await loadThreads();
+async function bootApp() {
+  if (!state.license?.active) {
+    renderLicenseStatus();
+    return;
+  }
+  await loadFacets();
+  await loadProviderSyncStatus();
+  await loadThreads();
+}
+
+async function boot() {
+  try {
+    state.license = await requestJson("/api/license/status");
+    renderLicenseStatus();
+    if (state.license.active) {
+      await bootApp();
+    }
+  } catch (error) {
+    elements.licenseGate.hidden = false;
+    elements.appShell.hidden = true;
+    elements.licenseStatus.textContent = error.message;
+    elements.licenseStatus.className = "license-status error";
+  }
+}
+
+await boot();

@@ -78,6 +78,9 @@ PLIST
 cp "$ROOT_DIR/package.json" "$VIEWER_DIR/package.json"
 cp "$ROOT_DIR/server.mjs" "$VIEWER_DIR/server.mjs"
 cp -R "$ROOT_DIR/public" "$VIEWER_DIR/public"
+if [ -f "$ROOT_DIR/license.json" ]; then
+  cp "$ROOT_DIR/license.json" "$VIEWER_DIR/license.json"
+fi
 cp "$NODE_BIN" "$NODE_DIR/bin/node"
 
 if [ -f "$NODE_ROOT/LICENSE" ]; then

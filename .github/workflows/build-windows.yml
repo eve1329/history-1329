@@ -1,0 +1,34 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "server.mjs"
+      - "public/**"
+      - "win/**"
+      - "package.json"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build Windows package
+        shell: pwsh
+        run: .\win\build-windows.ps1 -Runtime win-x64
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-History-Viewer-win-x64
+          path: dist/win/Codex History Viewer/**

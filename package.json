@@ -1,0 +1,12 @@
+{
+  "name": "codex-history-viewer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "build:mac": "bash mac/build-mac-app.sh",
+    "build:win": "powershell -ExecutionPolicy Bypass -File win/build-windows.ps1",
+    "build:win:arm64": "powershell -ExecutionPolicy Bypass -File win/build-windows.ps1 -Runtime win-arm64"
+  }
+}

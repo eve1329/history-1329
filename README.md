@@ -43,6 +43,20 @@ dist/mac/Codex History Viewer.app
 
 The macOS build script bundles the local Node runtime and compiles the Swift WebKit shell with `MACOSX_DEPLOYMENT_TARGET=12.0` by default.
 
+For a local Apple Silicon release zip:
+
+```bash
+npm run release:mac
+```
+
+The release package is written to:
+
+```text
+dist/release/Codex-History-Viewer-mac-arm64.zip
+```
+
+This script rebuilds the app, verifies the bundled activation config, checks the bundled Node runtime, and writes a `.sha256` checksum file next to the zip.
+
 ## Windows Build
 
 Build on Windows 10/11 with .NET 8 SDK installed:

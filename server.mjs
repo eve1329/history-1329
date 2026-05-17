@@ -403,6 +403,7 @@ async function localLicenseSnapshot() {
     reason: "activated",
     licenseKey: formatLicenseKey(payload.licenseKey || state.licenseKey),
     tokenExpiresAt: payload.expiresAt,
+    licenseExpiresAt: state.licenseExpiresAt || null,
     maxMachines: payload.maxMachines,
     machineCount: payload.machineCount,
     configPath: config.configPath,
@@ -450,6 +451,7 @@ async function activateLocalLicense(body) {
   await writeLicenseState({
     licenseKey,
     token: result.token,
+    licenseExpiresAt: result.expiresAt || null,
     activatedAt: new Date().toISOString(),
     lastValidatedAt: new Date().toISOString(),
     serverUrl: config.serverUrl
@@ -478,6 +480,7 @@ async function refreshLocalLicense() {
     ...state,
     licenseKey: normalizeLicenseKey(result.licenseKey || state.licenseKey),
     token: result.token,
+    licenseExpiresAt: result.expiresAt || state.licenseExpiresAt || null,
     lastValidatedAt: new Date().toISOString(),
     serverUrl: config.serverUrl
   });
@@ -1535,11 +1538,14 @@ async function promoteProject(body) {
         });
       }
       if (update) {
-        promoted += update.run({
-          id: row.id,
-          updated_at_ms: nextMs,
-          updated_at: Math.floor(nextMs / 1000)
-        }).changes ?? 0;
+        const updateParams = { id: row.id };
+        if (columns.has("updated_at_ms")) {
+          updateParams.updated_at_ms = nextMs;
+        }
+        if (columns.has("updated_at")) {
+          updateParams.updated_at = Math.floor(nextMs / 1000);
+        }
+        promoted += update.run(updateParams).changes ?? 0;
       }
     });
 

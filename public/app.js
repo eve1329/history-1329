@@ -111,8 +111,9 @@ function renderLicenseInline() {
     return;
   }
   elements.licenseInline.hidden = false;
-  const expires = license.tokenExpiresAt ? `，离线凭证到期：${formatDate(Date.parse(license.tokenExpiresAt))}` : "";
-  elements.licenseInlineText.textContent = `已激活 ${license.licenseKey || ""}，机器 ${license.machineCount || 1}/${license.maxMachines || 2}${expires}`;
+  const licenseExpires = license.licenseExpiresAt ? `，授权码有效至：${formatDate(Date.parse(license.licenseExpiresAt))}` : "";
+  const tokenRefresh = license.tokenExpiresAt ? `，本机下次需联网校验：${formatDate(Date.parse(license.tokenExpiresAt))}` : "";
+  elements.licenseInlineText.textContent = `已激活 ${license.licenseKey || ""}，机器 ${license.machineCount || 1}/${license.maxMachines || 2}${licenseExpires}${tokenRefresh}`;
 }
 
 function renderLicenseStatus(message = "") {

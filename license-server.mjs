@@ -11,6 +11,7 @@ const dbPath = process.env.LICENSE_DB || path.join(process.cwd(), "license-serve
 const adminSecret = process.env.LICENSE_ADMIN_SECRET || "";
 const appId = process.env.LICENSE_APP_ID || "codex-history-viewer";
 const defaultMaxMachines = Math.max(Number.parseInt(process.env.LICENSE_DEFAULT_MAX_MACHINES || "2", 10), 1);
+const maxBatchCreate = Math.max(Number.parseInt(process.env.LICENSE_MAX_BATCH_CREATE || "500", 10), 1);
 const tokenTtlDays = Math.max(Number.parseInt(process.env.LICENSE_TOKEN_TTL_DAYS || "30", 10), 1);
 const privateKeyPem = normalizePem(
   process.env.LICENSE_SIGNING_PRIVATE_KEY
@@ -119,6 +120,58 @@ function generateLicenseKey() {
 
 function isExpired(expiresAt) {
   return Boolean(expiresAt) && Date.parse(expiresAt) <= Date.now();
+}
+
+function isConstraintError(error) {
+  return /constraint/i.test(error?.message || "");
+}
+
+function parseMaxMachines(value) {
+  const source = value === undefined || value === null || value === "" ? defaultMaxMachines : value;
+  const parsed = Number.parseInt(String(source), 10);
+  return Number.isInteger(parsed) ? Math.max(parsed, 1) : defaultMaxMachines;
+}
+
+function parseExpiresAt(value) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    const error = new Error("expiresAt must be a valid date");
+    error.statusCode = 400;
+    error.payload = { error: error.message, code: "invalid_expires_at" };
+    throw error;
+  }
+  return date.toISOString();
+}
+
+function parseBatchCount(value) {
+  const parsed = Number(value === undefined || value === null || value === "" ? 1 : value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    const error = new Error("count must be at least 1");
+    error.statusCode = 400;
+    error.payload = { error: error.message, code: "invalid_count" };
+    throw error;
+  }
+  if (parsed > maxBatchCreate) {
+    const error = new Error(`count must be ${maxBatchCreate} or less`);
+    error.statusCode = 400;
+    error.payload = { error: error.message, code: "batch_limit_exceeded", maxBatchCreate };
+    throw error;
+  }
+  return parsed;
+}
+
+function licenseResponsePayload({ licenseKey, maxMachines, expiresAt, note, createdAt }) {
+  return {
+    licenseKey: formatLicenseKey(licenseKey),
+    compactLicenseKey: licenseKey,
+    maxMachines,
+    expiresAt,
+    note,
+    createdAt
+  };
 }
 
 function requireAdmin(req, res) {
@@ -394,34 +447,99 @@ function deactivateLicense(res, body) {
   json(res, 200, { deactivated: result.changes ?? 0, licenseKey: formatLicenseKey(licenseKey) });
 }
 
-function createLicense(res, body) {
-  const licenseKey = normalizeLicenseKey(body.licenseKey || generateLicenseKey());
-  const maxMachines = Math.max(Number.parseInt(String(body.maxMachines || defaultMaxMachines), 10), 1);
+function createLicenseRecords(body, count) {
   const note = String(body.note || "").slice(0, 500);
-  const expiresAt = body.expiresAt ? new Date(body.expiresAt).toISOString() : null;
+  const maxMachines = parseMaxMachines(body.maxMachines);
+  const expiresAt = parseExpiresAt(body.expiresAt);
   const createdAt = new Date().toISOString();
+  const requestedLicenseKey = normalizeLicenseKey(body.licenseKey);
+  const records = [];
+  const insert = db.prepare(`
+    INSERT INTO licenses (license_key, max_machines, note, disabled, expires_at, created_at)
+    VALUES (?, ?, ?, 0, ?, ?)
+  `);
 
+  if (requestedLicenseKey && count > 1) {
+    const error = new Error("licenseKey can only be used when count is 1");
+    error.statusCode = 400;
+    error.payload = { error: error.message, code: "license_key_with_batch" };
+    throw error;
+  }
+
+  db.exec("BEGIN IMMEDIATE");
   try {
-    db.prepare(`
-      INSERT INTO licenses (license_key, max_machines, note, disabled, expires_at, created_at)
-      VALUES (?, ?, ?, 0, ?, ?)
-    `).run(licenseKey, maxMachines, note, expiresAt, createdAt);
+    for (let index = 0; index < count; index += 1) {
+      let licenseKey = requestedLicenseKey || normalizeLicenseKey(generateLicenseKey());
+      let inserted = false;
+
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        try {
+          insert.run(licenseKey, maxMachines, note, expiresAt, createdAt);
+          records.push(licenseResponsePayload({ licenseKey, maxMachines, expiresAt, note, createdAt }));
+          inserted = true;
+          break;
+        } catch (error) {
+          if (!isConstraintError(error) || requestedLicenseKey) {
+            throw error;
+          }
+          licenseKey = normalizeLicenseKey(generateLicenseKey());
+        }
+      }
+
+      if (!inserted) {
+        const error = new Error("Could not generate a unique activation code");
+        error.statusCode = 500;
+        error.payload = { error: error.message, code: "license_generation_failed" };
+        throw error;
+      }
+    }
+    db.exec("COMMIT");
   } catch (error) {
-    if (/constraint/i.test(error?.message || "")) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+
+  return records;
+}
+
+function createLicense(res, body) {
+  try {
+    const records = createLicenseRecords(body, 1);
+    json(res, 201, records[0]);
+  } catch (error) {
+    if (isConstraintError(error)) {
       json(res, 409, { error: "Activation code already exists", code: "license_exists" });
+      return;
+    }
+    if (error.statusCode && error.payload) {
+      json(res, error.statusCode, error.payload);
       return;
     }
     throw error;
   }
+}
 
-  json(res, 201, {
-    licenseKey: formatLicenseKey(licenseKey),
-    compactLicenseKey: licenseKey,
-    maxMachines,
-    expiresAt,
-    note,
-    createdAt
-  });
+function createLicenseBatch(res, body) {
+  let count;
+  try {
+    count = parseBatchCount(body.count ?? body.quantity);
+    const licenses = createLicenseRecords(body, count);
+    json(res, 201, {
+      count: licenses.length,
+      licenses,
+      licenseKeys: licenses.map((license) => license.licenseKey)
+    });
+  } catch (error) {
+    if (isConstraintError(error)) {
+      json(res, 409, { error: "Activation code already exists", code: "license_exists" });
+      return;
+    }
+    if (error.statusCode && error.payload) {
+      json(res, error.statusCode, error.payload);
+      return;
+    }
+    throw error;
+  }
 }
 
 function listLicenses(res) {
@@ -437,6 +555,7 @@ function listLicenses(res) {
   `).all();
 
   json(res, 200, {
+    maxBatchCreate,
     licenses: rows.map((row) => ({
       licenseKey: formatLicenseKey(row.license_key),
       compactLicenseKey: row.license_key,
@@ -537,7 +656,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
     if (req.method === "GET" && url.pathname === "/health") {
-      json(res, 200, { ok: true, appId, dbPath, tokenTtlDays, defaultMaxMachines });
+      json(res, 200, { ok: true, appId, dbPath, tokenTtlDays, defaultMaxMachines, maxBatchCreate });
       return;
     }
 
@@ -579,6 +698,14 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    if (req.method === "POST" && url.pathname === "/admin/api/licenses/batch") {
+      if (!requireAdminSession(req, res)) {
+        return;
+      }
+      createLicenseBatch(res, await readJsonBody(req));
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/admin/api/activations/delete") {
       if (!requireAdminSession(req, res)) {
         return;
@@ -614,6 +741,14 @@ const server = http.createServer(async (req, res) => {
         createLicense(res, await readJsonBody(req));
         return;
       }
+    }
+
+    if (req.method === "POST" && url.pathname === "/admin/licenses/batch") {
+      if (!requireAdmin(req, res)) {
+        return;
+      }
+      createLicenseBatch(res, await readJsonBody(req));
+      return;
     }
 
     if (req.method === "PATCH" && url.pathname === "/admin/licenses") {

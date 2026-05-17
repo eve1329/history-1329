@@ -68,6 +68,29 @@ Response example:
 
 Send `licenseKey` to the customer.
 
+To create multiple activation codes in one request:
+
+```bash
+curl -X POST 'https://your-domain.example.com/admin/licenses/batch' \
+  -H 'authorization: Bearer replace-with-a-long-random-admin-secret' \
+  -H 'content-type: application/json' \
+  -d '{"count":20,"maxMachines":2,"note":"campaign or reseller batch"}'
+```
+
+Response example:
+
+```json
+{
+  "count": 20,
+  "licenseKeys": [
+    "CHV-ABCD-EFGH-IJKL-MNOP",
+    "CHV-2345-6789-ABCD-EFGH"
+  ]
+}
+```
+
+The default batch limit is 500 codes per request. Override it with `LICENSE_MAX_BATCH_CREATE` if needed.
+
 ## 4. List activation codes and bound machines
 
 ```bash
@@ -172,6 +195,7 @@ https://your-domain.example.com/admin
 Log in with `LICENSE_ADMIN_SECRET`. The web UI supports:
 
 - Creating activation codes.
+- Creating activation codes in batches.
 - Viewing bound machine IDs and machine labels.
 - Copying activation codes.
 - Enabling or disabling activation codes.

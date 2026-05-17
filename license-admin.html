@@ -8,7 +8,7 @@
     :root { color-scheme: light; --ink:#172033; --muted:#667085; --line:#d9e0ea; --blue:#1f6fb8; --green:#0f7a3b; --red:#b42318; font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     * { box-sizing: border-box; }
     body { margin:0; min-width:320px; background: radial-gradient(circle at 8% 0%, rgba(31,111,184,.18), transparent 30%), linear-gradient(180deg,#f8fbff,#eef3f8); color:var(--ink); }
-    button,input { font:inherit; }
+    button,input,textarea { font:inherit; }
     .shell { max-width:1180px; margin:0 auto; padding:28px; }
     .topbar { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:20px; }
     h1 { margin:0; font-size:30px; letter-spacing:-.03em; }
@@ -19,7 +19,9 @@
     .login .card { width:min(460px,100%); padding:28px; }
     .login h1 { font-size:28px; }
     .field { display:grid; gap:7px; color:#465162; font-size:13px; margin-top:14px; }
-    input { width:100%; min-height:42px; border:1px solid #cfd6e2; border-radius:10px; padding:9px 11px; background:#fff; color:var(--ink); }
+    input,textarea { width:100%; border:1px solid #cfd6e2; border-radius:10px; padding:9px 11px; background:#fff; color:var(--ink); }
+    input { min-height:42px; }
+    textarea { min-height:120px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:13px; line-height:1.5; }
     .btn { border:0; border-radius:10px; background:var(--blue); color:#fff; min-height:40px; padding:8px 14px; cursor:pointer; font-weight:700; }
     .btn.secondary { background:#fff; color:var(--ink); border:1px solid #cfd6e2; }
     .btn.danger { background:#b42318; }
@@ -31,7 +33,10 @@
     .stat { border:1px solid var(--line); border-radius:16px; background:#fff; padding:15px; }
     .stat strong { display:block; font-size:26px; }
     .stat span { color:var(--muted); font-size:12px; }
-    .create { display:grid; grid-template-columns:1fr 130px 190px auto; gap:10px; align-items:end; margin-bottom:16px; }
+    .create { display:grid; grid-template-columns:1fr 110px 130px 190px auto; gap:10px; align-items:end; margin-bottom:16px; }
+    .batch-result { border:1px solid #e7ebf2; border-radius:12px; background:#fbfdff; padding:12px; margin-bottom:16px; }
+    .batch-result-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+    .batch-result-head strong { font-size:14px; }
     .status { min-height:20px; margin:10px 0; color:var(--muted); font-size:13px; }
     .status.ok { color:var(--green); }
     .status.err { color:var(--red); }
@@ -80,23 +85,38 @@
       <h2>创建激活码</h2>
       <form id="createForm" class="create">
         <label class="field"><span>备注</span><input id="note" placeholder="客户名 / 订单号 / 用途"></label>
+        <label class="field"><span>数量</span><input id="count" type="number" min="1" max="500" value="1"></label>
         <label class="field"><span>机器数</span><input id="maxMachines" type="number" min="1" value="2"></label>
         <label class="field"><span>过期时间 可选</span><input id="expiresAt" type="date"></label>
         <button class="btn" type="submit">生成</button>
       </form>
       <div id="status" class="status"></div>
+      <div id="batchResult" class="batch-result hidden">
+        <div class="batch-result-head">
+          <strong id="batchResultTitle">已生成</strong>
+          <button id="copyGenerated" class="btn secondary" type="button">复制全部</button>
+        </div>
+        <textarea id="generatedCodes" readonly></textarea>
+      </div>
       <div id="licenses" class="licenses"></div>
     </section>
   </main>
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { licenses: [] };
+const state = { licenses: [], maxBatchCreate: 500 };
 function showLogin(message = '') { $('login').classList.remove('hidden'); $('app').classList.add('hidden'); $('loginStatus').textContent = message; }
 function showApp() { $('login').classList.add('hidden'); $('app').classList.remove('hidden'); }
 function status(message, kind='') { $('status').textContent = message; $('status').className = 'status ' + kind; }
 function fmtDate(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12:false }) : '无'; }
 function esc(value) { return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;'); }
 function inputDate(value) { return value ? new Date(value).toISOString().slice(0, 10) : ''; }
+function showGeneratedCodes(codes) {
+  const text = codes.join('\n');
+  $('generatedCodes').value = text;
+  $('batchResultTitle').textContent = `已生成 ${codes.length} 个激活码`;
+  $('batchResult').classList.toggle('hidden', codes.length === 0);
+  return text;
+}
 async function api(path, options = {}) {
   const res = await fetch(path, { cache:'no-store', headers:{ 'content-type':'application/json', ...(options.headers || {}) }, ...options });
   const payload = await res.json().catch(() => ({}));
@@ -107,6 +127,8 @@ async function load() {
   try {
     const payload = await api('/admin/api/licenses');
     state.licenses = payload.licenses || [];
+    state.maxBatchCreate = Number(payload.maxBatchCreate || state.maxBatchCreate);
+    $('count').max = String(state.maxBatchCreate);
     showApp(); render(); status('已刷新', 'ok');
   } catch (error) {
     if (/login|required|401/i.test(error.message)) showLogin('请先登录。');
@@ -179,12 +201,25 @@ $('createForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   status('正在生成...');
   try {
-    const body = { note: $('note').value, maxMachines: Number($('maxMachines').value || 2), expiresAt: $('expiresAt').value || null };
-    const result = await api('/admin/api/licenses', { method:'POST', body: JSON.stringify(body) });
-    $('note').value = ''; $('expiresAt').value = ''; $('maxMachines').value = '2';
-    await load(); status('已生成：' + result.licenseKey, 'ok');
-    await navigator.clipboard?.writeText(result.licenseKey).catch(() => {});
+    const count = Number($('count').value || 1);
+    if (!Number.isInteger(count) || count < 1) { status('数量至少为 1。', 'err'); return; }
+    if (count > state.maxBatchCreate) { status(`一次最多生成 ${state.maxBatchCreate} 个。`, 'err'); return; }
+    const body = { note: $('note').value, count, maxMachines: Number($('maxMachines').value || 2), expiresAt: $('expiresAt').value || null };
+    const result = count === 1
+      ? await api('/admin/api/licenses', { method:'POST', body: JSON.stringify(body) })
+      : await api('/admin/api/licenses/batch', { method:'POST', body: JSON.stringify(body) });
+    const codes = count === 1 ? [result.licenseKey] : (result.licenseKeys || []);
+    const text = showGeneratedCodes(codes);
+    $('note').value = ''; $('count').value = '1'; $('expiresAt').value = ''; $('maxMachines').value = '2';
+    await load(); status(`已生成 ${codes.length} 个激活码`, 'ok');
+    await navigator.clipboard?.writeText(text).catch(() => {});
   } catch (error) { status(error.message, 'err'); }
+});
+$('copyGenerated').addEventListener('click', async () => {
+  const text = $('generatedCodes').value.trim();
+  if (!text) { status('没有可复制的激活码。', 'err'); return; }
+  await navigator.clipboard?.writeText(text).catch(() => {});
+  status('已复制全部激活码', 'ok');
 });
 $('licenses').addEventListener('click', async (event) => {
   const copy = event.target.closest('[data-copy]');

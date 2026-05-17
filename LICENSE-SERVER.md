@@ -178,3 +178,26 @@ Log in with `LICENSE_ADMIN_SECRET`. The web UI supports:
 - Releasing a machine binding.
 
 The same API endpoints still work for scripts. The browser UI uses a signed, HttpOnly, Secure cookie valid for 12 hours.
+
+## Change the admin password
+
+From this repository on your Mac, run:
+
+```bash
+bash scripts/set-admin-password.sh 'new-admin-password'
+```
+
+Or run it without an argument to type the password without showing it in the terminal:
+
+```bash
+bash scripts/set-admin-password.sh
+```
+
+By default, the script connects to the SSH host alias `root`, updates `/opt/codex-history-license/.env`,
+backs up the old file, restarts `codex-history-license`, and verifies that the new password can log in.
+
+If the server SSH alias changes:
+
+```bash
+bash scripts/set-admin-password.sh --host root 'new-admin-password'
+```

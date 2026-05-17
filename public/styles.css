@@ -150,6 +150,7 @@ h1 {
 }
 
 .provider-sync-detail,
+.provider-sync-warning,
 .provider-sync-status {
   margin-top: 7px;
   color: #667085;
@@ -157,6 +158,13 @@ h1 {
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.provider-sync-warning {
+  border-left: 3px solid #dc6803;
+  background: #fff7ed;
+  color: #9a3412;
+  padding: 7px 9px;
 }
 
 .provider-sync-status.success {

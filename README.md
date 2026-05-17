@@ -135,3 +135,5 @@ On Windows this maps to:
 ```
 
 Backups include SQLite state files, Codex config/global state files when present, and a manifest of changed rollout metadata.
+
+Provider Sync uses the top-level `model_provider` in `config.toml` as the target for history metadata. The provider name should also have a matching `[model_providers.<name>]` section. If `model_provider = "cherry"` exists but only `[model_providers.qt]` is defined, the app warns before syncing and can back up `config.toml` before renaming the single provider section to match.

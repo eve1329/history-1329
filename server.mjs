@@ -29,6 +29,7 @@ const port = Number.isInteger(requestedPort) && requestedPort >= 0 && requestedP
 const defaultProvider = "openai";
 const providerSyncBackupKeepCount = 5;
 const sessionDirs = ["sessions", "archived_sessions"];
+const providerIdPattern = /^[A-Za-z0-9_.-]+$/;
 
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -185,6 +186,22 @@ function safePathPart(value) {
     .replaceAll("\\", "__")
     .replaceAll(":", "_")
     .replaceAll("\0", "");
+}
+
+function splitLineEnding(line) {
+  const match = line.match(/(\r\n|\n|\r)$/);
+  if (!match) {
+    return { body: line, eol: "" };
+  }
+  return {
+    body: line.slice(0, -match[0].length),
+    eol: match[0]
+  };
+}
+
+function splitLinesPreservingEndings(text) {
+  const lines = text.match(/[^\r\n]*(?:\r\n|\n|\r|$)/g) || [];
+  return lines.at(-1) === "" ? lines.slice(0, -1) : lines;
 }
 
 async function readJsonBody(req) {
@@ -663,7 +680,7 @@ function parseCurrentProvider(configText) {
     if (trimmed.startsWith("[")) {
       break;
     }
-    const match = trimmed.match(/^model_provider\s*=\s*"([^"]+)"\s*$/);
+    const match = trimmed.match(/^model_provider\s*=\s*"([^"]+)"\s*(?:#.*)?$/);
     if (match) {
       return {
         provider: match[1],
@@ -679,11 +696,38 @@ function parseCurrentProvider(configText) {
 
 function configuredProviderIds(configText) {
   const ids = new Set([defaultProvider]);
-  const regex = /^\[model_providers\.([A-Za-z0-9_.-]+)]\s*$/gm;
+  const regex = /^\s*\[model_providers\.([A-Za-z0-9_.-]+)]\s*(?:#.*)?$/gm;
   for (const match of configText.matchAll(regex)) {
     ids.add(match[1]);
   }
   return [...ids].sort();
+}
+
+function explicitConfiguredProviderIds(configText) {
+  const ids = new Set();
+  const regex = /^\s*\[model_providers\.([A-Za-z0-9_.-]+)]\s*(?:#.*)?$/gm;
+  for (const match of configText.matchAll(regex)) {
+    ids.add(match[1]);
+  }
+  return [...ids].sort();
+}
+
+function configProviderDiagnostics(config) {
+  const provider = config.provider || defaultProvider;
+  const configuredProviders = config.configuredProviders || [defaultProvider];
+  const explicitProviders = config.explicitProviders || [];
+  const providerDefined = configuredProviders.includes(provider);
+  const fixCandidate = !providerDefined && explicitProviders.length === 1 ? explicitProviders[0] : null;
+  const warning = providerDefined
+    ? ""
+    : `当前 model_provider = "${provider}"，但 config.toml 未定义 [model_providers.${provider}]。请把已有 provider 配置块改名为 [model_providers.${provider}]，或把 model_provider 改回已定义的 provider。`;
+
+  return {
+    configProviderDefined: providerDefined,
+    configProviderWarning: warning,
+    configProviderFixAvailable: Boolean(fixCandidate),
+    configProviderFixCandidate: fixCandidate
+  };
 }
 
 async function readConfigForProviderSync() {
@@ -692,7 +736,8 @@ async function readConfigForProviderSync() {
     return {
       text,
       ...parseCurrentProvider(text),
-      configuredProviders: configuredProviderIds(text)
+      configuredProviders: configuredProviderIds(text),
+      explicitProviders: explicitConfiguredProviderIds(text)
     };
   } catch (error) {
     if (error?.code === "ENOENT") {
@@ -701,6 +746,7 @@ async function readConfigForProviderSync() {
         provider: defaultProvider,
         implicit: true,
         configuredProviders: [defaultProvider],
+        explicitProviders: [],
         missing: true
       };
     }
@@ -966,6 +1012,124 @@ async function createProviderSyncBackup(targetProvider, changes) {
   );
 
   return backupDir;
+}
+
+function renameProviderSectionInConfig(configText, fromProvider, toProvider) {
+  if (!providerIdPattern.test(fromProvider) || !providerIdPattern.test(toProvider)) {
+    throw new Error("Provider name can only contain letters, numbers, underscore, dot, or dash.");
+  }
+
+  const lines = splitLinesPreservingEndings(configText);
+  let inTargetSection = false;
+  let renamedSection = false;
+  let renamedName = false;
+
+  const nextLines = lines.map((line) => {
+    const { body, eol } = splitLineEnding(line);
+    const sectionMatch = body.match(/^\s*\[model_providers\.([A-Za-z0-9_.-]+)]\s*(?:#.*)?$/);
+    if (sectionMatch) {
+      inTargetSection = sectionMatch[1] === fromProvider;
+      if (inTargetSection) {
+        renamedSection = true;
+        return body.replace(`[model_providers.${fromProvider}]`, `[model_providers.${toProvider}]`) + eol;
+      }
+      return line;
+    }
+
+    if (/^\s*\[/.test(body)) {
+      inTargetSection = false;
+      return line;
+    }
+
+    if (inTargetSection) {
+      const nameMatch = body.match(/^(\s*name\s*=\s*)"([^"]*)"(\s*(?:#.*)?)$/);
+      if (nameMatch && nameMatch[2] === fromProvider) {
+        renamedName = true;
+        return `${nameMatch[1]}"${toProvider}"${nameMatch[3]}${eol}`;
+      }
+    }
+
+    return line;
+  });
+
+  if (!renamedSection) {
+    throw new Error(`config.toml does not include [model_providers.${fromProvider}].`);
+  }
+
+  return {
+    text: nextLines.join(""),
+    renamedSection,
+    renamedName
+  };
+}
+
+async function fixConfigProviderName() {
+  const releaseLock = await acquireProviderSyncLock("history-viewer-provider-config-fix");
+  try {
+    const config = await readConfigForProviderSync();
+    if (config.missing) {
+      throw new Error(`config.toml not found: ${configPath}`);
+    }
+
+    const targetProvider = config.provider || defaultProvider;
+    const diagnostics = configProviderDiagnostics(config);
+    if (diagnostics.configProviderDefined) {
+      return {
+        changed: false,
+        reason: "current provider already has a matching config section",
+        configPath,
+        currentProvider: targetProvider,
+        configuredProviders: config.configuredProviders
+      };
+    }
+
+    const fromProvider = diagnostics.configProviderFixCandidate;
+    if (!fromProvider) {
+      throw new Error(`Cannot safely choose which provider section to rename. Defined providers: ${config.explicitProviders.join(", ") || "none"}.`);
+    }
+
+    const updated = renameProviderSectionInConfig(config.text, fromProvider, targetProvider);
+    const backupDir = path.join(providerSyncBackupRoot, timestampSlug());
+    await fs.mkdir(backupDir, { recursive: true });
+    const backupPath = path.join(backupDir, "config.toml");
+    await fs.writeFile(backupPath, config.text, "utf8");
+    await fs.writeFile(
+      path.join(backupDir, "metadata.json"),
+      `${JSON.stringify({
+        version: 1,
+        namespace: "provider-sync",
+        action: "fix-config-provider",
+        codexHome,
+        configPath,
+        fromProvider,
+        targetProvider,
+        createdAt: new Date().toISOString(),
+        changedSessionFiles: 0
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    const tmpPath = `${configPath}.provider-sync-config.${process.pid}.${Date.now()}.tmp`;
+    try {
+      await fs.writeFile(tmpPath, updated.text, "utf8");
+      await fs.rename(tmpPath, configPath);
+    } catch (error) {
+      await fs.rm(tmpPath, { force: true });
+      throw error;
+    }
+
+    return {
+      changed: true,
+      configPath,
+      backupPath,
+      backupDir,
+      oldProvider: fromProvider,
+      newProvider: targetProvider,
+      renamedName: updated.renamedName
+    };
+  } finally {
+    await releaseLock();
+  }
 }
 
 async function createSqliteBackup() {
@@ -1323,6 +1487,7 @@ async function readSqliteProviderCounts() {
 async function providerSyncStatus() {
   const config = await readConfigForProviderSync();
   const targetProvider = config.provider || defaultProvider;
+  const diagnostics = configProviderDiagnostics(config);
   const [sqliteCounts, rollout, backupSummary] = await Promise.all([
     readSqliteProviderCounts(),
     collectProviderSyncChanges(targetProvider),
@@ -1337,6 +1502,11 @@ async function providerSyncStatus() {
     currentProviderImplicit: config.implicit,
     configMissing: Boolean(config.missing),
     configuredProviders: config.configuredProviders,
+    explicitConfiguredProviders: config.explicitProviders,
+    configProviderDefined: diagnostics.configProviderDefined,
+    configProviderWarning: diagnostics.configProviderWarning,
+    configProviderFixAvailable: diagnostics.configProviderFixAvailable,
+    configProviderFixCandidate: diagnostics.configProviderFixCandidate,
     sqlite: sqliteCounts,
     rollout: {
       counts: rollout.counts,
@@ -1362,6 +1532,9 @@ async function syncProvider(body = {}) {
     const config = await readConfigForProviderSync();
     const requestedProvider = typeof body.provider === "string" ? body.provider.trim() : "";
     const targetProvider = requestedProvider || config.provider || defaultProvider;
+    if (!(config.configuredProviders || [defaultProvider]).includes(targetProvider)) {
+      throw new Error(`Provider "${targetProvider}" is not defined in config.toml. Fix the provider config before syncing history.`);
+    }
     const collected = await collectProviderSyncChanges(targetProvider);
     backupDir = await createProviderSyncBackup(targetProvider, collected.changes);
 
@@ -1605,6 +1778,14 @@ async function serveStatic(req, res, pathname) {
   }
 }
 
+export {
+  parseCurrentProvider,
+  configuredProviderIds,
+  explicitConfiguredProviderIds,
+  configProviderDiagnostics,
+  renameProviderSectionInConfig
+};
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
@@ -1707,6 +1888,17 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, await syncProvider(await readJsonBody(req)));
       return;
     }
+    if (url.pathname === "/api/provider-sync/fix-config-provider") {
+      if (req.method !== "POST") {
+        badRequest(res, "POST required");
+        return;
+      }
+      if (!(await requireLicense(res))) {
+        return;
+      }
+      json(res, 200, await fixConfigProviderName());
+      return;
+    }
     if (url.pathname === "/api/facets") {
       if (req.method !== "GET") {
         badRequest(res, "GET required");
@@ -1727,9 +1919,11 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, host, () => {
-  const address = server.address();
-  const actualPort = typeof address === "object" && address ? address.port : port;
-  console.log(`Codex history viewer: http://${host}:${actualPort}`);
-  console.log(`Reading SQLite database: ${dbPath}`);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  server.listen(port, host, () => {
+    const address = server.address();
+    const actualPort = typeof address === "object" && address ? address.port : port;
+    console.log(`Codex history viewer: http://${host}:${actualPort}`);
+    console.log(`Reading SQLite database: ${dbPath}`);
+  });
+}

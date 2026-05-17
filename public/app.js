@@ -45,8 +45,10 @@ const elements = {
   promoteProject: document.querySelector("#promoteProject"),
   providerSyncSummary: document.querySelector("#providerSyncSummary"),
   providerSyncDetail: document.querySelector("#providerSyncDetail"),
+  providerSyncWarning: document.querySelector("#providerSyncWarning"),
   providerSyncStatus: document.querySelector("#providerSyncStatus"),
   refreshProviderSync: document.querySelector("#refreshProviderSync"),
+  fixProviderConfig: document.querySelector("#fixProviderConfig"),
   syncProvider: document.querySelector("#syncProvider"),
   loadMore: document.querySelector("#loadMore")
 };
@@ -293,11 +295,15 @@ function renderProjects() {
 function renderProviderSync() {
   const status = state.providerSync;
   elements.refreshProviderSync.disabled = state.syncingProvider;
-  elements.syncProvider.disabled = state.syncingProvider || !status || !status.needsSync;
+  elements.fixProviderConfig.hidden = !status?.configProviderFixAvailable;
+  elements.fixProviderConfig.disabled = state.syncingProvider || !status?.configProviderFixAvailable;
+  elements.syncProvider.disabled = state.syncingProvider || !status || !status.needsSync || !status.configProviderDefined;
 
   if (!status) {
     elements.providerSyncSummary.textContent = "正在读取 Codex provider 状态...";
     elements.providerSyncDetail.textContent = "";
+    elements.providerSyncWarning.hidden = true;
+    elements.providerSyncWarning.textContent = "";
     return;
   }
 
@@ -319,8 +325,20 @@ function renderProviderSync() {
   elements.providerSyncDetail.textContent = [
     `SQLite ${sqliteTotal} 条：未归档 ${formatProviderCounts(sqliteSessions)}；已归档 ${formatProviderCounts(sqliteArchived)}`,
     `Rollout ${rolloutTotal} 个：未归档 ${formatProviderCounts(rolloutSessions)}；已归档 ${formatProviderCounts(rolloutArchived)}`,
+    `config.toml 已定义 Provider：${(status.configuredProviders || []).join(" / ") || "无"}`,
     `备份 ${status.backupSummary?.count ?? 0} 个：${status.backupRoot}`
   ].join("\n");
+
+  if (status.configProviderWarning) {
+    const fixHint = status.configProviderFixAvailable && status.configProviderFixCandidate
+      ? `可备份后把 [model_providers.${status.configProviderFixCandidate}] 重命名为 [model_providers.${current}]。`
+      : "请手动确认要改哪一个 provider 配置块。";
+    elements.providerSyncWarning.hidden = false;
+    elements.providerSyncWarning.textContent = `${status.configProviderWarning} ${fixHint} Provider Sync 只同步历史记录，不会自动修改 config.toml。`;
+  } else {
+    elements.providerSyncWarning.hidden = true;
+    elements.providerSyncWarning.textContent = "";
+  }
 
   if (status.rollout?.unreadable?.length) {
     elements.providerSyncStatus.textContent = `有 ${status.rollout.unreadable.length} 个 rollout 文件读取失败，同步时会跳过。`;
@@ -398,8 +416,12 @@ async function loadProviderSyncStatus() {
   } catch (error) {
     elements.providerSyncSummary.textContent = "Provider 状态读取失败";
     elements.providerSyncDetail.textContent = "";
+    elements.providerSyncWarning.hidden = true;
+    elements.providerSyncWarning.textContent = "";
     elements.providerSyncStatus.textContent = error.message;
     elements.providerSyncStatus.className = "provider-sync-status error";
+    elements.fixProviderConfig.hidden = true;
+    elements.fixProviderConfig.disabled = true;
     elements.syncProvider.disabled = true;
   }
 }
@@ -494,6 +516,44 @@ elements.refreshProviderSync.addEventListener("click", async () => {
   elements.providerSyncStatus.textContent = "";
   elements.providerSyncStatus.className = "provider-sync-status";
   await loadProviderSyncStatus();
+});
+elements.fixProviderConfig.addEventListener("click", async () => {
+  const status = state.providerSync;
+  const oldProvider = status?.configProviderFixCandidate;
+  const newProvider = status?.currentProvider || "openai";
+  if (!oldProvider) {
+    return;
+  }
+
+  const ok = window.confirm(`备份 config.toml 后，把 [model_providers.${oldProvider}] 改名为 [model_providers.${newProvider}]，并同步 name 字段？`);
+  if (!ok) {
+    return;
+  }
+
+  state.syncingProvider = true;
+  elements.fixProviderConfig.disabled = true;
+  elements.syncProvider.disabled = true;
+  elements.refreshProviderSync.disabled = true;
+  elements.providerSyncStatus.textContent = "正在备份并修复 config.toml provider 配置名...";
+  elements.providerSyncStatus.className = "provider-sync-status";
+
+  try {
+    const result = await postJson("/api/provider-sync/fix-config-provider");
+    if (result.changed) {
+      const nameText = result.renamedName ? "，并已更新 name 字段" : "";
+      elements.providerSyncStatus.textContent = `已把 ${result.oldProvider} 改为 ${result.newProvider}${nameText}。备份：${result.backupPath}`;
+    } else {
+      elements.providerSyncStatus.textContent = result.reason || "config.toml 已经是自洽状态。";
+    }
+    elements.providerSyncStatus.className = "provider-sync-status success";
+    await loadProviderSyncStatus();
+  } catch (error) {
+    elements.providerSyncStatus.textContent = error.message;
+    elements.providerSyncStatus.className = "provider-sync-status error";
+  } finally {
+    state.syncingProvider = false;
+    renderProviderSync();
+  }
 });
 elements.syncProvider.addEventListener("click", async () => {
   const provider = state.providerSync?.currentProvider || "openai";

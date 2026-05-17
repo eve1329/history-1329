@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.mjs",
     "build:mac": "bash mac/build-mac-app.sh",
-    "release:mac": "bash scripts/release-mac.sh",
+    "release:mac": "MAC_RUNTIME=darwin-arm64 bash scripts/release-mac.sh",
+    "release:mac:arm64": "MAC_RUNTIME=darwin-arm64 bash scripts/release-mac.sh",
+    "release:mac:x64": "MAC_RUNTIME=darwin-x64 bash scripts/release-mac.sh",
     "build:win": "powershell -ExecutionPolicy Bypass -File win/build-windows.ps1",
     "build:win:arm64": "powershell -ExecutionPolicy Bypass -File win/build-windows.ps1 -Runtime win-arm64",
     "license:keygen": "node scripts/generate-license-keypair.mjs",

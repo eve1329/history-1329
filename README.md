@@ -49,13 +49,26 @@ For a local Apple Silicon release zip:
 npm run release:mac
 ```
 
-The release package is written to:
+This is equivalent to:
+
+```bash
+npm run release:mac:arm64
+```
+
+For a local Intel Mac release zip:
+
+```bash
+npm run release:mac:x64
+```
+
+The release packages are written to:
 
 ```text
 dist/release/Codex-History-Viewer-mac-arm64.zip
+dist/release/Codex-History-Viewer-mac-x64.zip
 ```
 
-This script rebuilds the app, verifies the bundled activation config, checks the bundled Node runtime, and writes a `.sha256` checksum file next to the zip.
+This script rebuilds the app, verifies the bundled activation config, checks the bundled Node runtime when it can be executed on the build host, and writes a `.sha256` checksum file next to the zip. The x64 release path downloads and caches Node.js 24 for `darwin-x64` under `.cache/node` instead of copying the Apple Silicon Node binary.
 
 ## Windows Build
 

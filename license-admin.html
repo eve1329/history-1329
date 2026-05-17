@@ -24,6 +24,8 @@
     .btn.secondary { background:#fff; color:var(--ink); border:1px solid #cfd6e2; }
     .btn.danger { background:#b42318; }
     .btn:disabled { opacity:.55; cursor:default; }
+    .edit-panel { border-top:1px solid #edf1f6; background:#fbfdff; padding:15px; }
+    .edit-form { display:grid; grid-template-columns:1fr 130px 190px auto auto; gap:10px; align-items:end; }
     .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:flex-end; }
     .stats { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:12px; margin-bottom:16px; }
     .stat { border:1px solid var(--line); border-radius:16px; background:#fff; padding:15px; }
@@ -48,7 +50,7 @@
     .machine-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; color:#344054; word-break:break-all; margin-top:5px; }
     .empty { color:var(--muted); padding:12px; border:1px dashed #cfd6e2; border-radius:12px; background:#fbfdff; }
     .hidden { display:none !important; }
-    @media (max-width: 820px) { .shell { padding:16px; } .topbar,.license-head,.machine { grid-template-columns:1fr; display:grid; } .stats,.create { grid-template-columns:1fr; } .toolbar,.actions { justify-content:flex-start; } }
+    @media (max-width: 820px) { .shell { padding:16px; } .topbar,.license-head,.machine { grid-template-columns:1fr; display:grid; } .stats,.create,.edit-form { grid-template-columns:1fr; } .toolbar,.actions { justify-content:flex-start; } }
   </style>
 </head>
 <body>
@@ -94,6 +96,7 @@ function showApp() { $('login').classList.add('hidden'); $('app').classList.remo
 function status(message, kind='') { $('status').textContent = message; $('status').className = 'status ' + kind; }
 function fmtDate(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12:false }) : '无'; }
 function esc(value) { return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;'); }
+function inputDate(value) { return value ? new Date(value).toISOString().slice(0, 10) : ''; }
 async function api(path, options = {}) {
   const res = await fetch(path, { cache:'no-store', headers:{ 'content-type':'application/json', ...(options.headers || {}) }, ...options });
   const payload = await res.json().catch(() => ({}));
@@ -124,6 +127,17 @@ function renderLicense(lic) {
   const machineText = `${lic.machineCount || 0}/${lic.maxMachines || 2}`;
   const statePill = lic.disabled ? '<span class="pill bad">禁用</span>' : '<span class="pill ok">可用</span>';
   const fullPill = (lic.machineCount || 0) >= (lic.maxMachines || 2) ? '<span class="pill warn">已满</span>' : '';
+  const editPanel = `
+    <div class="edit-panel hidden" data-edit-panel="${esc(lic.licenseKey)}">
+      <form class="edit-form" data-edit-form="${esc(lic.licenseKey)}">
+        <label class="field"><span>备注</span><input name="note" value="${esc(lic.note || '')}" placeholder="客户名 / 订单号 / 用途"></label>
+        <label class="field"><span>机器数</span><input name="maxMachines" type="number" min="1" value="${esc(lic.maxMachines || 2)}"></label>
+        <label class="field"><span>过期时间 可选</span><input name="expiresAt" type="date" value="${esc(inputDate(lic.expiresAt))}"></label>
+        <button class="btn" type="submit">保存</button>
+        <button class="btn secondary" type="button" data-edit-cancel="${esc(lic.licenseKey)}">取消</button>
+      </form>
+    </div>
+  `;
   const machines = (lic.activations || []).map(act => `
     <div class="machine">
       <div>
@@ -143,9 +157,11 @@ function renderLicense(lic) {
         </div>
         <div class="actions">
           <button class="btn secondary" data-copy="${esc(lic.licenseKey)}">复制</button>
+          <button class="btn secondary" data-edit="${esc(lic.licenseKey)}">编辑</button>
           <button class="btn ${lic.disabled ? '' : 'danger'}" data-toggle="${esc(lic.licenseKey)}" data-disabled="${lic.disabled ? '0' : '1'}">${lic.disabled ? '启用' : '禁用'}</button>
         </div>
       </div>
+      ${editPanel}
       <div class="machines">${machines}</div>
     </article>
   `;
@@ -173,6 +189,10 @@ $('createForm').addEventListener('submit', async (event) => {
 $('licenses').addEventListener('click', async (event) => {
   const copy = event.target.closest('[data-copy]');
   if (copy) { await navigator.clipboard?.writeText(copy.dataset.copy).catch(() => {}); status('已复制：' + copy.dataset.copy, 'ok'); return; }
+  const edit = event.target.closest('[data-edit]');
+  if (edit) { document.querySelector(`[data-edit-panel="${CSS.escape(edit.dataset.edit)}"]`)?.classList.toggle('hidden'); return; }
+  const editCancel = event.target.closest('[data-edit-cancel]');
+  if (editCancel) { document.querySelector(`[data-edit-panel="${CSS.escape(editCancel.dataset.editCancel)}"]`)?.classList.add('hidden'); return; }
   const toggle = event.target.closest('[data-toggle]');
   if (toggle) {
     const disabled = toggle.dataset.disabled === '1';
@@ -187,6 +207,24 @@ $('licenses').addEventListener('click', async (event) => {
     try { await api('/admin/api/activations/delete', { method:'POST', body: JSON.stringify({ licenseKey: remove.dataset.removeMachine, machineId: remove.dataset.machineId }) }); await load(); status('已释放机器', 'ok'); }
     catch (error) { status(error.message, 'err'); }
   }
+});
+$('licenses').addEventListener('submit', async (event) => {
+  const form = event.target.closest('[data-edit-form]');
+  if (!form) return;
+  event.preventDefault();
+  const licenseKey = form.dataset.editForm;
+  const body = {
+    licenseKey,
+    note: form.elements.note.value,
+    maxMachines: Number(form.elements.maxMachines.value || 1),
+    expiresAt: form.elements.expiresAt.value || null
+  };
+  if (body.maxMachines < 1) { status('机器数至少为 1。', 'err'); return; }
+  try {
+    await api('/admin/api/licenses', { method:'PATCH', body: JSON.stringify(body) });
+    await load();
+    status('已更新：' + licenseKey, 'ok');
+  } catch (error) { status(error.message, 'err'); }
 });
 $('refresh').addEventListener('click', load);
 $('logout').addEventListener('click', async () => { await api('/admin/logout', { method:'POST' }).catch(() => {}); showLogin('已退出。'); });

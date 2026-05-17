@@ -25,6 +25,7 @@ if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
   exit 1
 fi
 
+APP_VERSION="${APP_VERSION:-$(ROOT_DIR="$ROOT_DIR" "$NODE_BIN" -p 'require(process.env.ROOT_DIR + "/package.json").version')}"
 NODE_ROOT="$(cd "$(dirname "$NODE_BIN")/.." && pwd)"
 
 swiftc \
@@ -59,7 +60,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
+  <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSMinimumSystemVersion</key>

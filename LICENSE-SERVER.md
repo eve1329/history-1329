@@ -158,7 +158,7 @@ For GitHub Actions release builds, add a repository secret named `LICENSE_CONFIG
 {"required":true,"serverUrl":"https://your-domain.example.com","publicKey":"-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"}
 ```
 
-Then push a tag such as `v1.1.0`. The `Release Windows` workflow writes that secret to `license.json` before packaging, so the generated Windows zip requires activation.
+Then push a tag such as `v1.2.0`. The `Release Windows` workflow writes that secret to `license.json` before packaging, so the generated Windows zip requires activation.
 
 If the secret is missing, CI still builds a development package, but it will not require activation.
 

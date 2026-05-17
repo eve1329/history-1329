@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex History License Admin</title>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#667085; --line:#d9e0ea; --blue:#1f6fb8; --green:#0f7a3b; --red:#b42318; font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-width:320px; background: radial-gradient(circle at 8% 0%, rgba(31,111,184,.18), transparent 30%), linear-gradient(180deg,#f8fbff,#eef3f8); color:var(--ink); }
+    button,input { font:inherit; }
+    .shell { max-width:1180px; margin:0 auto; padding:28px; }
+    .topbar { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:20px; }
+    h1 { margin:0; font-size:30px; letter-spacing:-.03em; }
+    h2 { margin:0 0 10px; font-size:18px; }
+    .sub { margin:7px 0 0; color:var(--muted); font-size:14px; }
+    .card { border:1px solid var(--line); border-radius:18px; background:rgba(255,255,255,.92); box-shadow:0 18px 50px rgba(23,32,51,.10); padding:18px; }
+    .login { min-height:100vh; display:grid; place-items:center; padding:20px; }
+    .login .card { width:min(460px,100%); padding:28px; }
+    .login h1 { font-size:28px; }
+    .field { display:grid; gap:7px; color:#465162; font-size:13px; margin-top:14px; }
+    input { width:100%; min-height:42px; border:1px solid #cfd6e2; border-radius:10px; padding:9px 11px; background:#fff; color:var(--ink); }
+    .btn { border:0; border-radius:10px; background:var(--blue); color:#fff; min-height:40px; padding:8px 14px; cursor:pointer; font-weight:700; }
+    .btn.secondary { background:#fff; color:var(--ink); border:1px solid #cfd6e2; }
+    .btn.danger { background:#b42318; }
+    .btn:disabled { opacity:.55; cursor:default; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:flex-end; }
+    .stats { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:12px; margin-bottom:16px; }
+    .stat { border:1px solid var(--line); border-radius:16px; background:#fff; padding:15px; }
+    .stat strong { display:block; font-size:26px; }
+    .stat span { color:var(--muted); font-size:12px; }
+    .create { display:grid; grid-template-columns:1fr 130px 190px auto; gap:10px; align-items:end; margin-bottom:16px; }
+    .status { min-height:20px; margin:10px 0; color:var(--muted); font-size:13px; }
+    .status.ok { color:var(--green); }
+    .status.err { color:var(--red); }
+    .licenses { display:grid; gap:12px; }
+    .license { border:1px solid var(--line); border-radius:16px; background:#fff; overflow:hidden; }
+    .license-head { display:grid; grid-template-columns:1fr auto; gap:12px; padding:15px; border-bottom:1px solid #edf1f6; }
+    .key { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:16px; font-weight:800; letter-spacing:.02em; word-break:break-all; }
+    .meta { display:flex; flex-wrap:wrap; gap:8px; color:var(--muted); font-size:12px; margin-top:8px; }
+    .pill { display:inline-flex; align-items:center; min-height:24px; border-radius:999px; padding:2px 9px; background:#eef2f6; color:#465162; }
+    .pill.ok { background:#e7f6ed; color:#116329; }
+    .pill.bad { background:#fff0ee; color:#b42318; }
+    .pill.warn { background:#fff6df; color:#93370d; }
+    .actions { display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; }
+    .machines { padding:0 15px 15px; display:grid; gap:8px; }
+    .machine { border:1px solid #e7ebf2; border-radius:12px; padding:10px; background:#fafcff; display:grid; grid-template-columns:1fr auto; gap:10px; }
+    .machine-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; color:#344054; word-break:break-all; margin-top:5px; }
+    .empty { color:var(--muted); padding:12px; border:1px dashed #cfd6e2; border-radius:12px; background:#fbfdff; }
+    .hidden { display:none !important; }
+    @media (max-width: 820px) { .shell { padding:16px; } .topbar,.license-head,.machine { grid-template-columns:1fr; display:grid; } .stats,.create { grid-template-columns:1fr; } .toolbar,.actions { justify-content:flex-start; } }
+  </style>
+</head>
+<body>
+  <section id="login" class="login hidden">
+    <div class="card">
+      <h1>License Admin</h1>
+      <p class="sub">输入服务器上的 LICENSE_ADMIN_SECRET 登录后台。</p>
+      <form id="loginForm">
+        <label class="field"><span>管理员密码</span><input id="secret" type="password" autocomplete="current-password" required></label>
+        <button class="btn" style="width:100%;margin-top:14px" type="submit">登录</button>
+      </form>
+      <div id="loginStatus" class="status"></div>
+    </div>
+  </section>
+  <main id="app" class="shell hidden">
+    <header class="topbar">
+      <div><h1>Codex History License Admin</h1><p class="sub">管理激活码、机器绑定和启用状态。</p></div>
+      <div class="toolbar"><button id="refresh" class="btn secondary">刷新</button><button id="logout" class="btn secondary">退出登录</button></div>
+    </header>
+    <section class="stats">
+      <div class="stat"><strong id="statLicenses">0</strong><span>激活码</span></div>
+      <div class="stat"><strong id="statActive">0</strong><span>可用</span></div>
+      <div class="stat"><strong id="statDisabled">0</strong><span>禁用</span></div>
+      <div class="stat"><strong id="statMachines">0</strong><span>绑定机器</span></div>
+    </section>
+    <section class="card">
+      <h2>创建激活码</h2>
+      <form id="createForm" class="create">
+        <label class="field"><span>备注</span><input id="note" placeholder="客户名 / 订单号 / 用途"></label>
+        <label class="field"><span>机器数</span><input id="maxMachines" type="number" min="1" value="2"></label>
+        <label class="field"><span>过期时间 可选</span><input id="expiresAt" type="date"></label>
+        <button class="btn" type="submit">生成</button>
+      </form>
+      <div id="status" class="status"></div>
+      <div id="licenses" class="licenses"></div>
+    </section>
+  </main>
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { licenses: [] };
+function showLogin(message = '') { $('login').classList.remove('hidden'); $('app').classList.add('hidden'); $('loginStatus').textContent = message; }
+function showApp() { $('login').classList.add('hidden'); $('app').classList.remove('hidden'); }
+function status(message, kind='') { $('status').textContent = message; $('status').className = 'status ' + kind; }
+function fmtDate(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12:false }) : '无'; }
+function esc(value) { return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;'); }
+async function api(path, options = {}) {
+  const res = await fetch(path, { cache:'no-store', headers:{ 'content-type':'application/json', ...(options.headers || {}) }, ...options });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok || payload.error) { throw new Error(payload.error || 'HTTP ' + res.status); }
+  return payload;
+}
+async function load() {
+  try {
+    const payload = await api('/admin/api/licenses');
+    state.licenses = payload.licenses || [];
+    showApp(); render(); status('已刷新', 'ok');
+  } catch (error) {
+    if (/login|required|401/i.test(error.message)) showLogin('请先登录。');
+    else showLogin(error.message);
+  }
+}
+function render() {
+  const total = state.licenses.length;
+  const disabled = state.licenses.filter(l => l.disabled).length;
+  const machines = state.licenses.reduce((sum,l) => sum + Number(l.machineCount || 0), 0);
+  $('statLicenses').textContent = total;
+  $('statActive').textContent = total - disabled;
+  $('statDisabled').textContent = disabled;
+  $('statMachines').textContent = machines;
+  $('licenses').innerHTML = state.licenses.map(renderLicense).join('') || '<div class="empty">暂无激活码，先生成一个。</div>';
+}
+function renderLicense(lic) {
+  const machineText = `${lic.machineCount || 0}/${lic.maxMachines || 2}`;
+  const statePill = lic.disabled ? '<span class="pill bad">禁用</span>' : '<span class="pill ok">可用</span>';
+  const fullPill = (lic.machineCount || 0) >= (lic.maxMachines || 2) ? '<span class="pill warn">已满</span>' : '';
+  const machines = (lic.activations || []).map(act => `
+    <div class="machine">
+      <div>
+        <strong>${esc(act.machine_label || '未知机器')}</strong>
+        <div class="machine-id">${esc(act.machine_id)}</div>
+        <div class="meta"><span>首次：${esc(fmtDate(act.first_activated_at))}</span><span>最近：${esc(fmtDate(act.last_seen_at))}</span></div>
+      </div>
+      <button class="btn secondary" data-remove-machine="${esc(lic.licenseKey)}" data-machine-id="${esc(act.machine_id)}">释放机器</button>
+    </div>
+  `).join('') || '<div class="empty">暂无机器绑定。</div>';
+  return `
+    <article class="license">
+      <div class="license-head">
+        <div>
+          <div class="key">${esc(lic.licenseKey)}</div>
+          <div class="meta"><span class="pill">机器 ${esc(machineText)}</span>${statePill}${fullPill}<span>备注：${esc(lic.note || '无')}</span><span>创建：${esc(fmtDate(lic.createdAt))}</span><span>过期：${esc(fmtDate(lic.expiresAt))}</span></div>
+        </div>
+        <div class="actions">
+          <button class="btn secondary" data-copy="${esc(lic.licenseKey)}">复制</button>
+          <button class="btn ${lic.disabled ? '' : 'danger'}" data-toggle="${esc(lic.licenseKey)}" data-disabled="${lic.disabled ? '0' : '1'}">${lic.disabled ? '启用' : '禁用'}</button>
+        </div>
+      </div>
+      <div class="machines">${machines}</div>
+    </article>
+  `;
+}
+$('loginForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  $('loginStatus').textContent = '登录中...';
+  try {
+    await api('/admin/login', { method:'POST', body: JSON.stringify({ secret: $('secret').value }) });
+    $('secret').value = '';
+    await load();
+  } catch (error) { $('loginStatus').textContent = error.message; }
+});
+$('createForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  status('正在生成...');
+  try {
+    const body = { note: $('note').value, maxMachines: Number($('maxMachines').value || 2), expiresAt: $('expiresAt').value || null };
+    const result = await api('/admin/api/licenses', { method:'POST', body: JSON.stringify(body) });
+    $('note').value = ''; $('expiresAt').value = ''; $('maxMachines').value = '2';
+    await load(); status('已生成：' + result.licenseKey, 'ok');
+    await navigator.clipboard?.writeText(result.licenseKey).catch(() => {});
+  } catch (error) { status(error.message, 'err'); }
+});
+$('licenses').addEventListener('click', async (event) => {
+  const copy = event.target.closest('[data-copy]');
+  if (copy) { await navigator.clipboard?.writeText(copy.dataset.copy).catch(() => {}); status('已复制：' + copy.dataset.copy, 'ok'); return; }
+  const toggle = event.target.closest('[data-toggle]');
+  if (toggle) {
+    const disabled = toggle.dataset.disabled === '1';
+    if (!confirm(`${disabled ? '禁用' : '启用'} ${toggle.dataset.toggle}？`)) return;
+    try { await api('/admin/api/licenses', { method:'PATCH', body: JSON.stringify({ licenseKey: toggle.dataset.toggle, disabled }) }); await load(); }
+    catch (error) { status(error.message, 'err'); }
+    return;
+  }
+  const remove = event.target.closest('[data-remove-machine]');
+  if (remove) {
+    if (!confirm('释放这台机器绑定？')) return;
+    try { await api('/admin/api/activations/delete', { method:'POST', body: JSON.stringify({ licenseKey: remove.dataset.removeMachine, machineId: remove.dataset.machineId }) }); await load(); status('已释放机器', 'ok'); }
+    catch (error) { status(error.message, 'err'); }
+  }
+});
+$('refresh').addEventListener('click', load);
+$('logout').addEventListener('click', async () => { await api('/admin/logout', { method:'POST' }).catch(() => {}); showLogin('已退出。'); });
+load();
+</script>
+</body>
+</html>

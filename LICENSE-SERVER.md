@@ -159,3 +159,22 @@ The server:
 ## Security notes
 
 This protects against casual sharing of activation codes. It is not strong DRM if the full source code is public, because a developer can remove license checks and rebuild. For commercial distribution, keep the app source private, sign binaries, and obfuscate or compile more of the license logic into the native shell.
+
+
+## Admin Web UI
+
+After deployment, open:
+
+```text
+https://your-domain.example.com/admin
+```
+
+Log in with `LICENSE_ADMIN_SECRET`. The web UI supports:
+
+- Creating activation codes.
+- Viewing bound machine IDs and machine labels.
+- Copying activation codes.
+- Enabling or disabling activation codes.
+- Releasing a machine binding.
+
+The same API endpoints still work for scripts. The browser UI uses a signed, HttpOnly, Secure cookie valid for 12 hours.

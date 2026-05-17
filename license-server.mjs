@@ -135,6 +135,70 @@ function requireAdmin(req, res) {
   return true;
 }
 
+function html(res, statusCode, body, method = "GET") {
+  res.writeHead(statusCode, {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store"
+  });
+  res.end(method === "HEAD" ? undefined : body);
+}
+
+function parseCookies(req) {
+  const cookies = {};
+  const header = req.headers.cookie || "";
+  for (const part of header.split(";")) {
+    const index = part.indexOf("=");
+    if (index === -1) {
+      continue;
+    }
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    cookies[key] = decodeURIComponent(value);
+  }
+  return cookies;
+}
+
+function adminCookieSignature(value) {
+  return crypto.createHmac("sha256", adminSecret).update(value).digest("base64url");
+}
+
+function createAdminSessionCookie() {
+  const expiresAt = Date.now() + 12 * 60 * 60 * 1000;
+  const nonce = crypto.randomBytes(16).toString("base64url");
+  const value = `${expiresAt}.${nonce}`;
+  return `${value}.${adminCookieSignature(value)}`;
+}
+
+function verifyAdminSession(req) {
+  if (!adminSecret) {
+    return false;
+  }
+  const session = parseCookies(req).chv_admin;
+  if (!session) {
+    return false;
+  }
+  const parts = session.split(".");
+  if (parts.length !== 3) {
+    return false;
+  }
+  const value = `${parts[0]}.${parts[1]}`;
+  const expected = adminCookieSignature(value);
+  const actual = parts[2];
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(actual))) {
+    return false;
+  }
+  return Number(parts[0]) > Date.now();
+}
+
+function requireAdminSession(req, res) {
+  if (verifyAdminSession(req)) {
+    return true;
+  }
+  json(res, 401, { error: "Admin login required" });
+  return false;
+}
+
 function base64UrlEncode(value) {
   return Buffer.from(value).toString("base64url");
 }
@@ -441,11 +505,85 @@ function updateLicense(res, body) {
   });
 }
 
+function adminPage() {
+  const pagePath = process.env.LICENSE_ADMIN_PAGE || path.join(process.cwd(), "license-admin.html");
+  try {
+    return fsSync.readFileSync(pagePath, "utf8");
+  } catch {
+    return "<!doctype html><meta charset=\"utf-8\"><title>License Admin</title><h1>License Admin</h1><p>license-admin.html was not found.</p>";
+  }
+}
+
+function setAdminCookie(res) {
+  const cookie = createAdminSessionCookie();
+  res.writeHead(200, {
+    "content-type": "application/json; charset=utf-8",
+    "set-cookie": `chv_admin=${encodeURIComponent(cookie)}; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=43200`,
+    "cache-control": "no-store"
+  });
+  res.end(JSON.stringify({ ok: true }));
+}
+
+function clearAdminCookie(res) {
+  res.writeHead(200, {
+    "content-type": "application/json; charset=utf-8",
+    "set-cookie": "chv_admin=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=0",
+    "cache-control": "no-store"
+  });
+  res.end(JSON.stringify({ ok: true }));
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
     if (req.method === "GET" && url.pathname === "/health") {
       json(res, 200, { ok: true, appId, dbPath, tokenTtlDays, defaultMaxMachines });
+      return;
+    }
+
+    if ((req.method === "GET" || req.method === "HEAD") && (url.pathname === "/admin" || url.pathname === "/admin/")) {
+      html(res, 200, adminPage(), req.method);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/admin/login") {
+      const body = await readJsonBody(req);
+      if (!adminSecret || body.secret !== adminSecret) {
+        json(res, 401, { error: "管理员密码不正确" });
+        return;
+      }
+      setAdminCookie(res);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/admin/logout") {
+      clearAdminCookie(res);
+      return;
+    }
+
+    if (url.pathname === "/admin/api/licenses") {
+      if (!requireAdminSession(req, res)) {
+        return;
+      }
+      if (req.method === "GET") {
+        listLicenses(res);
+        return;
+      }
+      if (req.method === "POST") {
+        createLicense(res, await readJsonBody(req));
+        return;
+      }
+      if (req.method === "PATCH") {
+        updateLicense(res, await readJsonBody(req));
+        return;
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/admin/api/activations/delete") {
+      if (!requireAdminSession(req, res)) {
+        return;
+      }
+      removeActivation(res, await readJsonBody(req));
       return;
     }
 

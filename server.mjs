@@ -75,6 +75,90 @@ function tableHasColumn(db, tableName, columnName) {
     .some((column) => column.name === columnName);
 }
 
+function tableColumns(db, tableName) {
+  return new Set(
+    db
+      .prepare(`PRAGMA table_info("${tableName.replaceAll("\"", "\"\"")}")`)
+      .all()
+      .map((column) => column.name)
+  );
+}
+
+function requireThreadColumns(db) {
+  const columns = tableColumns(db, "threads");
+  if (!columns.has("id")) {
+    throw new Error("threads table is missing required column: id");
+  }
+  return columns;
+}
+
+function optionalColumnSql(columns, columnName, fallback = "NULL") {
+  return columns.has(columnName) ? columnName : fallback;
+}
+
+function timestampColumnMsSql(columnName) {
+  return `CASE
+    WHEN ${columnName} IS NULL THEN NULL
+    WHEN typeof(${columnName}) IN ('integer', 'real') THEN
+      CASE WHEN ABS(${columnName}) >= 10000000000 THEN ${columnName} ELSE ${columnName} * 1000 END
+    WHEN unixepoch(${columnName}) IS NOT NULL THEN unixepoch(${columnName}) * 1000
+    ELSE NULL
+  END`;
+}
+
+function threadCreatedAtMsSql(columns) {
+  const candidates = [];
+  if (columns.has("created_at_ms")) {
+    candidates.push("NULLIF(created_at_ms, 0)");
+  }
+  if (columns.has("created_at")) {
+    candidates.push(timestampColumnMsSql("created_at"));
+  }
+  if (columns.has("updated_at_ms")) {
+    candidates.push("NULLIF(updated_at_ms, 0)");
+  }
+  if (columns.has("updated_at")) {
+    candidates.push(timestampColumnMsSql("updated_at"));
+  }
+  return `COALESCE(${[...candidates, "0"].join(", ")})`;
+}
+
+function threadUpdatedAtMsSql(columns) {
+  const candidates = [];
+  if (columns.has("updated_at_ms")) {
+    candidates.push("NULLIF(updated_at_ms, 0)");
+  }
+  if (columns.has("updated_at")) {
+    candidates.push(timestampColumnMsSql("updated_at"));
+  }
+  if (columns.has("created_at_ms")) {
+    candidates.push("NULLIF(created_at_ms, 0)");
+  }
+  if (columns.has("created_at")) {
+    candidates.push(timestampColumnMsSql("created_at"));
+  }
+  return `COALESCE(${[...candidates, "0"].join(", ")})`;
+}
+
+function threadArchivedSql(columns) {
+  return columns.has("archived") ? "COALESCE(archived, 0)" : "0";
+}
+
+function threadProviderSql(columns) {
+  return columns.has("model_provider") ? "model_provider" : "NULL";
+}
+
+function threadTimestampUpdateSetSql(columns) {
+  const sets = [];
+  if (columns.has("updated_at_ms")) {
+    sets.push("updated_at_ms = @updated_at_ms");
+  }
+  if (columns.has("updated_at")) {
+    sets.push("updated_at = @updated_at");
+  }
+  return sets.join(", ");
+}
+
 function sqlString(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
@@ -1017,39 +1101,45 @@ async function addProjectRootToDesktop(cwd) {
   };
 }
 
-function buildWhere(url) {
+function buildWhere(url, columns) {
   const clauses = [];
   const params = {};
+  const archivedSql = threadArchivedSql(columns);
   const archived = url.searchParams.get("archived") || "0";
   if (archived !== "all") {
     if (archived !== "0" && archived !== "1") {
       throw new Error("archived must be 0, 1, or all");
     }
-    clauses.push("archived = @archived");
+    clauses.push(`${archivedSql} = @archived`);
     params.archived = Number(archived);
   }
 
   const cwd = url.searchParams.get("cwd");
   if (cwd) {
+    if (!columns.has("cwd")) {
+      throw new Error("This Codex database does not include project paths.");
+    }
     clauses.push("cwd = @cwd");
     params.cwd = cwd;
   }
 
   const provider = url.searchParams.get("provider");
   if (provider) {
+    if (!columns.has("model_provider")) {
+      throw new Error("This Codex database does not include model provider metadata.");
+    }
     clauses.push("model_provider = @provider");
     params.provider = provider;
   }
 
   const q = url.searchParams.get("q")?.trim();
   if (q) {
-    clauses.push(`(
-      title LIKE @q
-      OR first_user_message LIKE @q
-      OR preview LIKE @q
-      OR cwd LIKE @q
-      OR id LIKE @q
-    )`);
+    const searchColumns = ["title", "first_user_message", "preview", "cwd", "id"]
+      .filter((column) => columns.has(column))
+      .map((column) => `${column} LIKE @q`);
+    if (searchColumns.length > 0) {
+      clauses.push(`(${searchColumns.join(" OR ")})`);
+    }
     params.q = `%${q}%`;
   }
 
@@ -1062,39 +1152,37 @@ function buildWhere(url) {
 function listThreads(url) {
   const limit = Math.min(Math.max(Number.parseInt(url.searchParams.get("limit") || "500", 10), 1), 2000);
   const offset = Math.max(Number.parseInt(url.searchParams.get("offset") || "0", 10), 0);
-  const { whereSql, params } = buildWhere(url);
 
   let db;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });
-    for (const column of ["id", "cwd", "title", "updated_at_ms", "created_at_ms", "archived", "model_provider"]) {
-      if (!tableHasColumn(db, "threads", column)) {
-        throw new Error(`threads table is missing required column: ${column}`);
-      }
-    }
+    const columns = requireThreadColumns(db);
+    const { whereSql, params } = buildWhere(url, columns);
+    const createdAtMsSql = threadCreatedAtMsSql(columns);
+    const updatedAtMsSql = threadUpdatedAtMsSql(columns);
+    const archivedSql = threadArchivedSql(columns);
+    const modelProviderSql = threadProviderSql(columns);
 
     const countRow = db.prepare(`SELECT COUNT(*) AS count FROM threads ${whereSql}`).get(params);
     const rows = db.prepare(`
       SELECT
         id,
-        rollout_path,
-        created_at,
-        updated_at,
-        created_at_ms,
-        updated_at_ms,
-        source,
-        model_provider,
-        cwd,
-        title,
-        first_user_message,
-        preview,
-        archived,
-        archived_at,
-        model,
-        reasoning_effort
+        ${optionalColumnSql(columns, "rollout_path")} AS rollout_path,
+        ${createdAtMsSql} AS created_at_ms,
+        ${updatedAtMsSql} AS updated_at_ms,
+        ${optionalColumnSql(columns, "source")} AS source,
+        ${modelProviderSql} AS model_provider,
+        ${optionalColumnSql(columns, "cwd")} AS cwd,
+        ${optionalColumnSql(columns, "title")} AS title,
+        ${optionalColumnSql(columns, "first_user_message")} AS first_user_message,
+        ${optionalColumnSql(columns, "preview")} AS preview,
+        ${archivedSql} AS archived,
+        ${optionalColumnSql(columns, "archived_at")} AS archived_at,
+        ${optionalColumnSql(columns, "model")} AS model,
+        ${optionalColumnSql(columns, "reasoning_effort")} AS reasoning_effort
       FROM threads
       ${whereSql}
-      ORDER BY COALESCE(updated_at_ms, updated_at * 1000, created_at_ms, created_at * 1000, 0) DESC, id DESC
+      ORDER BY updated_at_ms DESC, id DESC
       LIMIT @limit OFFSET @offset
     `).all({ ...params, limit, offset });
 
@@ -1105,8 +1193,8 @@ function listThreads(url) {
       offset,
       rows: rows.map((row) => ({
         ...row,
-        created_at_ms: Number(row.created_at_ms ?? row.created_at * 1000 ?? 0),
-        updated_at_ms: Number(row.updated_at_ms ?? row.updated_at * 1000 ?? 0),
+        created_at_ms: Number(row.created_at_ms) || 0,
+        updated_at_ms: Number(row.updated_at_ms) || 0,
         archived: Number(row.archived) === 1
       }))
     };
@@ -1119,19 +1207,24 @@ function listFacets() {
   let db;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });
+    const columns = requireThreadColumns(db);
+    const updatedAtMsSql = threadUpdatedAtMsSql(columns);
+    const archivedSql = threadArchivedSql(columns);
+    const cwdSql = optionalColumnSql(columns, "cwd");
+    const modelProviderSql = threadProviderSql(columns);
     const projects = db.prepare(`
       SELECT
-        cwd,
+        ${cwdSql} AS cwd,
         COUNT(*) AS count,
-        SUM(CASE WHEN archived = 1 THEN 0 ELSE 1 END) AS active_count,
-        MAX(COALESCE(updated_at_ms, updated_at * 1000, created_at_ms, created_at * 1000, 0)) AS last_updated_ms
+        SUM(CASE WHEN ${archivedSql} = 1 THEN 0 ELSE 1 END) AS active_count,
+        MAX(${updatedAtMsSql}) AS last_updated_ms
       FROM threads
-      WHERE cwd IS NOT NULL AND cwd <> ''
+      WHERE ${cwdSql} IS NOT NULL AND ${cwdSql} <> ''
       GROUP BY cwd
       ORDER BY last_updated_ms DESC, cwd
     `).all();
     const providers = db.prepare(`
-      SELECT model_provider, COUNT(*) AS count
+      SELECT ${modelProviderSql} AS model_provider, COUNT(*) AS count
       FROM threads
       GROUP BY model_provider
       ORDER BY count DESC, model_provider
@@ -1139,8 +1232,8 @@ function listFacets() {
     const counts = db.prepare(`
       SELECT
         COUNT(*) AS total,
-        SUM(CASE WHEN archived = 1 THEN 0 ELSE 1 END) AS active,
-        SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END) AS archived
+        SUM(CASE WHEN ${archivedSql} = 1 THEN 0 ELSE 1 END) AS active,
+        SUM(CASE WHEN ${archivedSql} = 1 THEN 1 ELSE 0 END) AS archived
       FROM threads
     `).get();
 
@@ -1171,13 +1264,25 @@ async function readSqliteProviderCounts() {
   let db;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });
+    const columns = requireThreadColumns(db);
+    if (!columns.has("model_provider")) {
+      return {
+        present: false,
+        counts: {
+          sessions: {},
+          archived_sessions: {}
+        },
+        error: "threads table does not include model_provider"
+      };
+    }
+    const archivedSql = threadArchivedSql(columns);
     const rows = db.prepare(`
       SELECT
         CASE
           WHEN model_provider IS NULL OR model_provider = '' THEN '(missing)'
           ELSE model_provider
         END AS provider,
-        archived,
+        ${archivedSql} AS archived,
         COUNT(*) AS count
       FROM threads
       GROUP BY model_provider, archived
@@ -1262,11 +1367,14 @@ async function syncProvider(body = {}) {
     db.exec("BEGIN IMMEDIATE");
     transactionOpen = true;
 
-    const providerResult = db.prepare(`
-      UPDATE threads
-      SET model_provider = @provider
-      WHERE COALESCE(model_provider, '') <> @provider
-    `).run({ provider: targetProvider });
+    const columns = requireThreadColumns(db);
+    const providerResult = columns.has("model_provider")
+      ? db.prepare(`
+        UPDATE threads
+        SET model_provider = @provider
+        WHERE COALESCE(model_provider, '') <> @provider
+      `).run({ provider: targetProvider })
+      : { changes: 0 };
 
     for (const change of collected.changes) {
       const result = await rewriteRolloutFirstLine(change);
@@ -1346,17 +1454,6 @@ async function promoteProject(body) {
   const provider = typeof body.provider === "string" ? body.provider.trim() : "";
   const backupPath = await createSqliteBackup();
   const desktopRootResult = await addProjectRootToDesktop(cwd);
-  const params = { cwd };
-  const clauses = ["cwd = @cwd"];
-  if (archived !== "all") {
-    clauses.push("archived = @archived");
-    params.archived = Number(archived);
-  }
-  if (provider) {
-    clauses.push("model_provider = @provider");
-    params.provider = provider;
-  }
-  const whereSql = clauses.join(" AND ");
 
   let db;
   let transactionOpen = false;
@@ -1365,13 +1462,32 @@ async function promoteProject(body) {
     db.exec("PRAGMA busy_timeout = 5000");
     db.exec("BEGIN IMMEDIATE");
     transactionOpen = true;
+    const columns = requireThreadColumns(db);
+    if (!columns.has("cwd")) {
+      throw new Error("This Codex database does not include project paths.");
+    }
+    if (provider && !columns.has("model_provider")) {
+      throw new Error("This Codex database does not include model provider metadata.");
+    }
+    const updatedAtMsSql = threadUpdatedAtMsSql(columns);
+    const params = { cwd };
+    const clauses = ["cwd = @cwd"];
+    if (archived !== "all") {
+      clauses.push(`${threadArchivedSql(columns)} = @archived`);
+      params.archived = Number(archived);
+    }
+    if (provider) {
+      clauses.push("model_provider = @provider");
+      params.provider = provider;
+    }
+    const whereSql = clauses.join(" AND ");
 
     const rows = db.prepare(`
       SELECT
         id,
-        rollout_path,
-        title,
-        COALESCE(updated_at_ms, updated_at * 1000, created_at_ms, created_at * 1000, 0) AS sort_ts
+        ${optionalColumnSql(columns, "rollout_path")} AS rollout_path,
+        ${optionalColumnSql(columns, "title")} AS title,
+        ${updatedAtMsSql} AS sort_ts
       FROM threads
       WHERE ${whereSql}
       ORDER BY sort_ts DESC, id DESC
@@ -1392,17 +1508,19 @@ async function promoteProject(body) {
     }
 
     const maxRow = db.prepare(`
-      SELECT MAX(COALESCE(updated_at_ms, updated_at * 1000, created_at_ms, created_at * 1000, 0)) AS max_ms
+      SELECT MAX(${updatedAtMsSql}) AS max_ms
       FROM threads
     `).get();
     const maxMs = Number(maxRow?.max_ms) || 0;
     const startMs = Math.max(Date.now(), maxMs) + rows.length * 1000;
-    const update = db.prepare(`
-      UPDATE threads
-      SET updated_at_ms = @updated_at_ms,
-          updated_at = @updated_at
-      WHERE id = @id
-    `);
+    const timestampUpdateSetSql = threadTimestampUpdateSetSql(columns);
+    const update = timestampUpdateSetSql
+      ? db.prepare(`
+        UPDATE threads
+        SET ${timestampUpdateSetSql}
+        WHERE id = @id
+      `)
+      : null;
 
     let promoted = 0;
     const rolloutResults = [];
@@ -1416,11 +1534,13 @@ async function promoteProject(body) {
           ...rolloutResult
         });
       }
-      promoted += update.run({
-        id: row.id,
-        updated_at_ms: nextMs,
-        updated_at: Math.floor(nextMs / 1000)
-      }).changes ?? 0;
+      if (update) {
+        promoted += update.run({
+          id: row.id,
+          updated_at_ms: nextMs,
+          updated_at: Math.floor(nextMs / 1000)
+        }).changes ?? 0;
+      }
     });
 
     db.exec("COMMIT");

@@ -22,6 +22,7 @@ const providerSyncLockDir = path.join(codexHome, "tmp", "provider-sync.lock");
 const appId = "codex-history-viewer";
 const licenseConfigPath = process.env.CODEX_HISTORY_LICENSE_CONFIG || path.join(__dirname, "license.json");
 const licenseStatePath = path.join(codexHome, "license-state.json");
+const accessToken = String(process.env.CODEX_HISTORY_VIEWER_TOKEN || "").trim();
 const host = process.env.HOST || "127.0.0.1";
 const requestedPort = Number.parseInt(process.env.PORT || "3999", 10);
 const port = Number.isInteger(requestedPort) && requestedPort >= 0 && requestedPort <= 65535 ? requestedPort : 3999;
@@ -44,7 +45,7 @@ function json(res, statusCode, payload) {
     "content-length": Buffer.byteLength(body),
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-headers": "content-type,x-codex-history-token",
     "cache-control": "no-store"
   });
   res.end(body);
@@ -52,6 +53,19 @@ function json(res, statusCode, payload) {
 
 function badRequest(res, message) {
   json(res, 400, { error: message });
+}
+
+function forbidden(res, message = "Forbidden") {
+  json(res, 403, { error: message });
+}
+
+function hasValidAccessToken(req, url) {
+  if (!accessToken) {
+    return true;
+  }
+  const headerToken = String(req.headers["x-codex-history-token"] || "");
+  const queryToken = url.searchParams.get("access_token") || "";
+  return headerToken === accessToken || queryToken === accessToken;
 }
 
 function tableHasColumn(db, tableName, columnName) {
@@ -1470,6 +1484,10 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
     if (req.method === "OPTIONS") {
       json(res, 204, {});
+      return;
+    }
+    if (url.pathname.startsWith("/api/") && !hasValidAccessToken(req, url)) {
+      forbidden(res, "Invalid local access token");
       return;
     }
     if (url.pathname === "/api/health") {

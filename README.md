@@ -81,7 +81,8 @@ The Windows package:
 
 - Bundles Node.js 24 for `node:sqlite` support.
 - Starts the local backend on `127.0.0.1` with an available port.
-- Opens the default browser automatically.
+- Opens an embedded WebView2 window automatically.
+- Protects local API endpoints with a per-launch random access token.
 - Keeps a tray icon for reopening, restarting, log viewing, and exit.
 - Uses `CODEX_HOME` when set, otherwise `%USERPROFILE%\.codex`.
 

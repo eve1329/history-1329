@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
   private var serverProcess: Process?
   private var startupOutput = ""
   private let logURL = URL(fileURLWithPath: "/tmp/codex-history-viewer.log")
+  private let accessToken = UUID().uuidString.replacingOccurrences(of: "-", with: "")
 
   private var port: Int {
     portSelection.port
@@ -175,6 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
     environment["CODEX_HISTORY_VIEWER_DIR"] = viewerDir
     environment["CODEX_HISTORY_VIEWER_NODE"] = bundledNodePath
     environment["CODEX_HISTORY_VIEWER_PORT"] = String(port)
+    environment["CODEX_HISTORY_VIEWER_TOKEN"] = accessToken
     process.environment = environment
 
     let pipe = Pipe()
@@ -219,7 +221,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
 
       DispatchQueue.main.async {
         if ready {
-          self.webView?.load(URLRequest(url: self.baseURL))
+          var components = URLComponents(url: self.baseURL, resolvingAgainstBaseURL: false)!
+          components.queryItems = [URLQueryItem(name: "access_token", value: self.accessToken)]
+          self.webView?.load(URLRequest(url: components.url!))
           return
         }
 
@@ -240,6 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
     var request = URLRequest(url: url)
     request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
     request.timeoutInterval = 1.5
+    request.setValue(accessToken, forHTTPHeaderField: "X-Codex-History-Token")
 
     URLSession.shared.dataTask(with: request) { _, response, _ in
       let status = (response as? HTTPURLResponse)?.statusCode

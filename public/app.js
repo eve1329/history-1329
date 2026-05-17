@@ -11,6 +11,15 @@ const state = {
 };
 
 const apiBase = window.location.protocol === "file:" ? "http://127.0.0.1:3999" : "";
+const queryAccessToken = new URLSearchParams(window.location.search).get("access_token") || "";
+if (queryAccessToken) {
+  window.sessionStorage.setItem("codexHistoryAccessToken", queryAccessToken);
+}
+const accessToken = queryAccessToken || window.sessionStorage.getItem("codexHistoryAccessToken") || "";
+
+if (queryAccessToken && window.history.replaceState) {
+  window.history.replaceState(null, "", window.location.pathname);
+}
 
 const elements = {
   licenseGate: document.querySelector("#licenseGate"),
@@ -20,8 +29,6 @@ const elements = {
   activateLicense: document.querySelector("#activateLicense"),
   licenseStatus: document.querySelector("#licenseStatus"),
   licenseMessage: document.querySelector("#licenseMessage"),
-  licenseMachine: document.querySelector("#licenseMachine"),
-  licenseServer: document.querySelector("#licenseServer"),
   licenseInline: document.querySelector("#licenseInline"),
   licenseInlineText: document.querySelector("#licenseInlineText"),
   deactivateLicense: document.querySelector("#deactivateLicense"),
@@ -110,9 +117,6 @@ function renderLicenseInline() {
 
 function renderLicenseStatus(message = "") {
   const license = state.license;
-  const machine = license?.machine;
-  elements.licenseMachine.textContent = machine?.machineLabel || machine?.machineId?.slice(0, 12) || "未知";
-  elements.licenseServer.textContent = license?.serverUrl || "未配置";
   elements.licenseStatus.textContent = message || license?.message || "";
   elements.licenseStatus.className = `license-status ${license?.active ? "success" : license?.reason === "license_not_configured" ? "error" : ""}`;
 
@@ -175,7 +179,10 @@ function debounce(fn, delay) {
 }
 
 async function requestJson(url) {
-  const response = await fetch(`${apiBase}${url}`, { cache: "no-store" });
+  const response = await fetch(`${apiBase}${url}`, {
+    cache: "no-store",
+    headers: accessToken ? { "x-codex-history-token": accessToken } : {}
+  });
   const payload = await response.json();
   if (!response.ok || payload.error) {
     const error = new Error(payload.error || `HTTP ${response.status}`);
@@ -189,7 +196,8 @@ async function postJson(url, body = {}) {
   const response = await fetch(`${apiBase}${url}`, {
     method: "POST",
     headers: {
-      "content-type": "application/json"
+      "content-type": "application/json",
+      ...(accessToken ? { "x-codex-history-token": accessToken } : {})
     },
     body: JSON.stringify(body)
   });

@@ -560,15 +560,6 @@ h1 {
   color: #b42318;
 }
 
-.license-meta {
-  display: grid;
-  gap: 5px;
-  margin-top: 18px;
-  color: #667085;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
 .license-inline {
   display: inline-flex;
   flex-wrap: wrap;

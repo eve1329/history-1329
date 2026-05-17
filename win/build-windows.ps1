@@ -123,7 +123,8 @@ What this package contains:
 Runtime behavior:
   - Uses CODEX_HOME if set; otherwise reads %USERPROFILE%\.codex.
   - Starts a local HTTP server on 127.0.0.1 using an available port.
-  - Opens the default browser automatically.
+  - Opens an embedded WebView2 window automatically.
+  - Protects local API endpoints with a per-launch random access token.
   - Keeps running in the Windows notification area until Exit is selected.
   - Writes logs to %LOCALAPPDATA%\CodexHistoryViewer\codex-history-viewer.log.
 

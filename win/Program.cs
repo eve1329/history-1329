@@ -1,10 +1,13 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Security.Cryptography;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Windows.Forms;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
 
 namespace CodexHistoryViewer;
 
@@ -32,9 +35,12 @@ internal sealed class ViewerApplicationContext : ApplicationContext
     };
 
     private Process? serverProcess;
+    private Form? viewerWindow;
+    private WebView2? webView;
     private string startupOutput = "";
     private int port;
     private Uri? baseUri;
+    private readonly string accessToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
     private bool exitRequested;
 
     public ViewerApplicationContext()
@@ -46,7 +52,7 @@ internal sealed class ViewerApplicationContext : ApplicationContext
             Visible = true,
             ContextMenuStrip = BuildMenu()
         };
-        notifyIcon.DoubleClick += (_, _) => OpenViewer();
+        notifyIcon.DoubleClick += async (_, _) => await OpenViewerAsync();
 
         Application.ApplicationExit += (_, _) => StopServer();
         AppDomain.CurrentDomain.ProcessExit += (_, _) => StopServer();
@@ -80,7 +86,7 @@ internal sealed class ViewerApplicationContext : ApplicationContext
 
             if (await WaitForServerAsync())
             {
-                OpenViewer();
+                await OpenViewerAsync();
                 return;
             }
 
@@ -95,7 +101,7 @@ internal sealed class ViewerApplicationContext : ApplicationContext
     private ContextMenuStrip BuildMenu()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Open Viewer", null, (_, _) => OpenViewer());
+        menu.Items.Add("Open Viewer", null, async (_, _) => await OpenViewerAsync());
         menu.Items.Add("Open Log", null, (_, _) => OpenLog());
         menu.Items.Add("Restart Server", null, async (_, _) => await RestartServerAsync());
         menu.Items.Add(new ToolStripSeparator());
@@ -154,7 +160,8 @@ internal sealed class ViewerApplicationContext : ApplicationContext
         {
             ["HOST"] = Host,
             ["PORT"] = port.ToString(),
-            ["CODEX_HISTORY_VIEWER_PORT"] = port.ToString()
+            ["CODEX_HISTORY_VIEWER_PORT"] = port.ToString(),
+            ["CODEX_HISTORY_VIEWER_TOKEN"] = accessToken
         };
 
         var startInfo = new ProcessStartInfo
@@ -252,7 +259,9 @@ internal sealed class ViewerApplicationContext : ApplicationContext
         {
             try
             {
-                using var response = await httpClient.GetAsync(healthUri);
+                using var request = new HttpRequestMessage(HttpMethod.Get, healthUri);
+                request.Headers.Add("X-Codex-History-Token", accessToken);
+                using var response = await httpClient.SendAsync(request);
                 if (response.IsSuccessStatusCode)
                 {
                     return true;
@@ -269,7 +278,7 @@ internal sealed class ViewerApplicationContext : ApplicationContext
         return false;
     }
 
-    private void OpenViewer()
+    private async Task OpenViewerAsync()
     {
         if (baseUri is null)
         {
@@ -278,15 +287,81 @@ internal sealed class ViewerApplicationContext : ApplicationContext
 
         try
         {
-            Process.Start(new ProcessStartInfo
+            if (viewerWindow is null || viewerWindow.IsDisposed)
             {
-                FileName = baseUri.ToString(),
-                UseShellExecute = true
-            });
+                viewerWindow = BuildViewerWindow();
+            }
+
+            viewerWindow.Show();
+            viewerWindow.WindowState = FormWindowState.Normal;
+            viewerWindow.Activate();
+
+            if (webView is not null)
+            {
+                await EnsureWebViewReadyAsync();
+                webView.CoreWebView2.Navigate(ViewerUrl);
+            }
         }
         catch (Exception error)
         {
             MessageBox.Show(error.Message, AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private Form BuildViewerWindow()
+    {
+        var form = new Form
+        {
+            Text = AppName,
+            Width = 1220,
+            Height = 820,
+            StartPosition = FormStartPosition.CenterScreen
+        };
+        form.FormClosing += (_, args) =>
+        {
+            if (!exitRequested)
+            {
+                args.Cancel = true;
+                form.Hide();
+            }
+        };
+
+        webView = new WebView2
+        {
+            Dock = DockStyle.Fill
+        };
+        form.Controls.Add(webView);
+        return form;
+    }
+
+    private async Task EnsureWebViewReadyAsync()
+    {
+        if (webView is null || webView.CoreWebView2 is not null)
+        {
+            return;
+        }
+
+        var userDataFolder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CodexHistoryViewer",
+            "WebView2"
+        );
+        Directory.CreateDirectory(userDataFolder);
+        var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataFolder);
+        await webView.EnsureCoreWebView2Async(environment);
+        webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+        webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+    }
+
+    private string ViewerUrl
+    {
+        get
+        {
+            var builder = new UriBuilder(baseUri!)
+            {
+                Query = $"access_token={Uri.EscapeDataString(accessToken)}"
+            };
+            return builder.Uri.ToString();
         }
     }
 
@@ -299,7 +374,7 @@ internal sealed class ViewerApplicationContext : ApplicationContext
             StartServerIfNeeded();
             if (await WaitForServerAsync())
             {
-                OpenViewer();
+                await OpenViewerAsync();
                 return;
             }
 
@@ -315,6 +390,9 @@ internal sealed class ViewerApplicationContext : ApplicationContext
     {
         exitRequested = true;
         notifyIcon.Visible = false;
+        viewerWindow?.Close();
+        webView?.Dispose();
+        viewerWindow?.Dispose();
         StopServer();
         ExitThread();
     }

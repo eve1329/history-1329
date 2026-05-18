@@ -1209,16 +1209,147 @@ function pathArray(value) {
   return [];
 }
 
+function normalizePathForComparison(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const normalized = path.normalize(trimmed);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 function putPathFirst(paths, cwd) {
   const next = [cwd];
-  const seen = new Set([cwd]);
+  const seen = new Set([normalizePathForComparison(cwd)]);
   for (const item of pathArray(paths)) {
-    if (!seen.has(item)) {
-      seen.add(item);
+    const key = normalizePathForComparison(item);
+    if (!seen.has(key)) {
+      seen.add(key);
       next.push(item);
     }
   }
   return next;
+}
+
+function hasTruthyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeDesktopStateForProject(state, cwd) {
+  const nextState = { ...state };
+  const nextProjectOrder = putPathFirst(nextState["project-order"], cwd);
+  const nextSavedRoots = putPathFirst(nextState["electron-saved-workspace-roots"], cwd);
+  const nextActiveRoots = putPathFirst(nextState["active-workspace-roots"], cwd);
+  const remoteKeysToClear = ["selected-remote-host-id", "active-remote-project-id"];
+  const clearedRemoteKeys = [];
+
+  let changed = false;
+  if (JSON.stringify(nextState["project-order"] ?? null) !== JSON.stringify(nextProjectOrder)) {
+    nextState["project-order"] = nextProjectOrder;
+    changed = true;
+  }
+  if (JSON.stringify(nextState["electron-saved-workspace-roots"] ?? null) !== JSON.stringify(nextSavedRoots)) {
+    nextState["electron-saved-workspace-roots"] = nextSavedRoots;
+    changed = true;
+  }
+  if (JSON.stringify(nextState["active-workspace-roots"] ?? null) !== JSON.stringify(nextActiveRoots)) {
+    nextState["active-workspace-roots"] = nextActiveRoots;
+    changed = true;
+  }
+
+  for (const key of remoteKeysToClear) {
+    if (hasTruthyString(nextState[key])) {
+      nextState[key] = null;
+      clearedRemoteKeys.push(key);
+      changed = true;
+    }
+  }
+
+  return {
+    nextState,
+    changed,
+    clearedRemoteKeys
+  };
+}
+
+function desktopStateMatchesProject(state, cwd) {
+  const targetPath = normalizePathForComparison(cwd);
+  if (normalizePathForComparison(pathArray(state["project-order"])[0]) !== targetPath) {
+    return false;
+  }
+  if (normalizePathForComparison(pathArray(state["electron-saved-workspace-roots"])[0]) !== targetPath) {
+    return false;
+  }
+  if (normalizePathForComparison(pathArray(state["active-workspace-roots"])[0]) !== targetPath) {
+    return false;
+  }
+  if (hasTruthyString(state["selected-remote-host-id"])) {
+    return false;
+  }
+  if (hasTruthyString(state["active-remote-project-id"])) {
+    return false;
+  }
+  return true;
+}
+
+async function waitForDesktopStateStability(cwd, { timeoutMs = 2400, stableChecks = 2, intervalMs = 150 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let stableCount = 0;
+  let lastReason = "timeout";
+  let lastError = null;
+
+  while (Date.now() < deadline) {
+    try {
+      const text = await fs.readFile(globalStatePath, "utf8");
+      const state = JSON.parse(text);
+      if (desktopStateMatchesProject(state, cwd)) {
+        stableCount += 1;
+        if (stableCount >= stableChecks) {
+          return {
+            verified: true,
+            stableChecks: stableCount,
+            reason: null
+          };
+        }
+      } else {
+        stableCount = 0;
+        const mismatches = [];
+        if (normalizePathForComparison(pathArray(state["project-order"])[0]) !== normalizePathForComparison(cwd)) {
+          mismatches.push("project-order");
+        }
+        if (normalizePathForComparison(pathArray(state["electron-saved-workspace-roots"])[0]) !== normalizePathForComparison(cwd)) {
+          mismatches.push("electron-saved-workspace-roots");
+        }
+        if (normalizePathForComparison(pathArray(state["active-workspace-roots"])[0]) !== normalizePathForComparison(cwd)) {
+          mismatches.push("active-workspace-roots");
+        }
+        if (hasTruthyString(state["selected-remote-host-id"])) {
+          mismatches.push("selected-remote-host-id");
+        }
+        if (hasTruthyString(state["active-remote-project-id"])) {
+          mismatches.push("active-remote-project-id");
+        }
+        lastReason = mismatches.length > 0 ? mismatches.join(", ") : "unknown";
+      }
+    } catch (error) {
+      stableCount = 0;
+      lastError = error;
+      lastReason = error instanceof Error ? error.message : String(error);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  return {
+    verified: false,
+    stableChecks,
+    reason: lastError ? `read_error: ${lastReason}` : lastReason
+  };
 }
 
 async function addProjectRootToDesktop(cwd) {
@@ -1236,13 +1367,9 @@ async function addProjectRootToDesktop(cwd) {
     throw error;
   }
 
-  const state = JSON.parse(originalText);
-  const nextProjectOrder = putPathFirst(state["project-order"], cwd);
-  const nextSavedRoots = putPathFirst(state["electron-saved-workspace-roots"], cwd);
-  const changed = JSON.stringify(state["project-order"] ?? null) !== JSON.stringify(nextProjectOrder)
-    || JSON.stringify(state["electron-saved-workspace-roots"] ?? null) !== JSON.stringify(nextSavedRoots);
-
-  if (!changed) {
+  const initialState = JSON.parse(originalText);
+  const initialNormalized = normalizeDesktopStateForProject(initialState, cwd);
+  if (!initialNormalized.changed) {
     return {
       updated: false,
       backupPath: null,
@@ -1255,16 +1382,58 @@ async function addProjectRootToDesktop(cwd) {
   const backupPath = path.join(backupRoot, `.codex-global-state.${timestampForPath()}.json`);
   await fs.writeFile(backupPath, originalText, "utf8");
 
-  state["project-order"] = nextProjectOrder;
-  state["electron-saved-workspace-roots"] = nextSavedRoots;
-  const nextText = `${JSON.stringify(state, null, 2)}\n`;
-  await fs.writeFile(globalStatePath, nextText, "utf8");
-  await fs.writeFile(globalStateBackupPath, nextText, "utf8");
+  let attempts = 0;
+  let lastClearedRemoteKeys = initialNormalized.clearedRemoteKeys;
+  for (; attempts < 3; attempts += 1) {
+    const latestText = attempts === 0 ? originalText : await fs.readFile(globalStatePath, "utf8");
+    const latestState = JSON.parse(latestText);
+    const normalized = normalizeDesktopStateForProject(latestState, cwd);
+    lastClearedRemoteKeys = normalized.clearedRemoteKeys;
 
+    if (!normalized.changed) {
+      return {
+        updated: false,
+        backupPath,
+        reason: "already present",
+        attempts: attempts + 1,
+        warning: null
+      };
+    }
+
+    const nextText = `${JSON.stringify(normalized.nextState, null, 2)}\n`;
+    await fs.writeFile(globalStatePath, nextText, "utf8");
+    await fs.writeFile(globalStateBackupPath, nextText, "utf8");
+
+    const verification = await waitForDesktopStateStability(cwd);
+    if (verification.verified) {
+      return {
+        updated: true,
+        verified: true,
+        backupPath,
+        reason: "added",
+        attempts: attempts + 1,
+        verification: {
+          stableChecks: verification.stableChecks
+        },
+        clearedRemoteKeys: lastClearedRemoteKeys,
+        warning: attempts > 0 ? "恢复状态写入时检测到 Codex 正在改写全局状态，已自动重试。" : null
+      };
+    }
+  }
+
+  const finalVerification = await waitForDesktopStateStability(cwd, { timeoutMs: 600, stableChecks: 1 });
   return {
     updated: true,
+    verified: false,
     backupPath,
-    reason: "added"
+    reason: "added",
+    attempts,
+    clearedRemoteKeys: lastClearedRemoteKeys,
+    verification: {
+      stableChecks: finalVerification.stableChecks,
+      reason: finalVerification.reason
+    },
+    warning: "Codex 仍在运行并覆盖了恢复状态。请先重启 Codex Desktop 后再点一次“恢复到 Codex App”。"
   };
 }
 

@@ -616,7 +616,15 @@ elements.promoteProject.addEventListener("click", async () => {
       provider: selected.provider
     });
     const rootText = result.desktopRoot?.updated ? "已加入 Codex App 项目列表。" : "Codex App 项目列表已存在。";
-    elements.promoteStatus.textContent = `已恢复 ${result.promoted} 条。${rootText} 备份：${result.backupPath}`;
+    const retryText = Number(result.desktopRoot?.attempts) > 1 ? `（自动重试 ${result.desktopRoot.attempts} 次）` : "";
+    const remoteHint = Array.isArray(result.desktopRoot?.clearedRemoteKeys) && result.desktopRoot.clearedRemoteKeys.length > 0
+      ? "已清理远程会话选择状态。"
+      : "";
+    const verifiedText = result.desktopRoot?.verified
+      ? `已确认生效（连续稳定 ${result.desktopRoot.verification?.stableChecks || 2} 次）。`
+      : "尚未确认稳定生效，可能还在被 Codex 写回覆盖。";
+    const warningText = result.desktopRoot?.warning ? ` 注意：${result.desktopRoot.warning}` : "";
+    elements.promoteStatus.textContent = `已恢复 ${result.promoted} 条。${rootText}${retryText}${remoteHint ? ` ${remoteHint}` : ""} ${verifiedText} 备份：${result.backupPath}${warningText}`;
     elements.promoteStatus.className = "promote-status success";
     await loadFacets();
     await loadThreads();

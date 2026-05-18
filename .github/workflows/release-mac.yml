@@ -1,0 +1,77 @@
+name: Release macOS
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-mac-arm64:
+    runs-on: macos-14
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Write private license config
+        shell: bash
+        env:
+          LICENSE_CONFIG_JSON: ${{ secrets.LICENSE_CONFIG_JSON }}
+        run: |
+          if [ -n "${LICENSE_CONFIG_JSON:-}" ]; then
+            printf '%s' "$LICENSE_CONFIG_JSON" > license.json
+          fi
+
+      - name: Build macOS arm64 release zip
+        shell: bash
+        run: npm run release:mac:arm64
+
+      - name: Upload macOS arm64 release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/release/Codex-History-Viewer-mac-arm64.zip
+            dist/release/Codex-History-Viewer-mac-arm64.zip.sha256
+          generate_release_notes: true
+
+  release-mac-x64:
+    runs-on: macos-13
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Write private license config
+        shell: bash
+        env:
+          LICENSE_CONFIG_JSON: ${{ secrets.LICENSE_CONFIG_JSON }}
+        run: |
+          if [ -n "${LICENSE_CONFIG_JSON:-}" ]; then
+            printf '%s' "$LICENSE_CONFIG_JSON" > license.json
+          fi
+
+      - name: Build macOS x64 release zip
+        shell: bash
+        run: npm run release:mac:x64
+
+      - name: Upload macOS x64 release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/release/Codex-History-Viewer-mac-x64.zip
+            dist/release/Codex-History-Viewer-mac-x64.zip.sha256
+          generate_release_notes: true

@@ -7,9 +7,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>CodexHistoryViewer</AssemblyName>
     <RootNamespace>CodexHistoryViewer</RootNamespace>
-    <Version>1.2.3</Version>
-    <FileVersion>1.2.3.0</FileVersion>
-    <AssemblyVersion>1.2.3.0</AssemblyVersion>
+    <Version>1.2.4</Version>
+    <FileVersion>1.2.4.0</FileVersion>
+    <AssemblyVersion>1.2.4.0</AssemblyVersion>
     <Company>Local</Company>
     <Product>Codex History Viewer</Product>
   </PropertyGroup>

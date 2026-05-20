@@ -1,11 +1,12 @@
 {
   "name": "codex-history-viewer",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
     "test:provider-config": "node scripts/test-provider-config.mjs",
+    "test:windows-regressions": "node scripts/test-windows-path-and-rollout.mjs",
     "build:mac": "bash mac/build-mac-app.sh",
     "release:mac": "MAC_RUNTIME=darwin-arm64 bash scripts/release-mac.sh",
     "release:mac:arm64": "MAC_RUNTIME=darwin-arm64 bash scripts/release-mac.sh",

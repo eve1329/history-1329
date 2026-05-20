@@ -1162,40 +1162,69 @@ function updateRolloutUpdatedAtSync(filePath, updatedAtMs) {
   }
 
   const backupPath = backupFileSync(filePath, "rollouts");
-  const originalText = fsSync.readFileSync(filePath, "utf8");
-  const hasTrailingNewline = originalText.endsWith("\n");
-  const lines = originalText.split("\n");
-  if (hasTrailingNewline) {
-    lines.pop();
-  }
+  const originalBuffer = fsSync.readFileSync(filePath);
+  let lineEnd = originalBuffer.length;
+  let lastJsonStart = -1;
+  let lastJsonContentEnd = -1;
+  let lastJsonLineEnd = -1;
+  let lastJsonText = "";
 
-  let lastJsonLine = -1;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (!lines[index].trim()) {
-      continue;
+  while (lineEnd >= 0) {
+    const newlineIndex = originalBuffer.lastIndexOf(0x0a, lineEnd - 1);
+    const lineStart = newlineIndex === -1 ? 0 : newlineIndex + 1;
+    let contentEnd = lineEnd;
+    while (contentEnd > lineStart && (originalBuffer[contentEnd - 1] === 0x0a || originalBuffer[contentEnd - 1] === 0x0d)) {
+      contentEnd -= 1;
     }
-    try {
-      JSON.parse(lines[index]);
-      lastJsonLine = index;
+    const lineText = originalBuffer.subarray(lineStart, contentEnd).toString("utf8");
+
+    if (lineText.trim()) {
+      try {
+        JSON.parse(lineText);
+        lastJsonStart = lineStart;
+        lastJsonContentEnd = contentEnd;
+        lastJsonLineEnd = lineEnd;
+        lastJsonText = lineText;
+        break;
+      } catch {
+        // Keep scanning; non-JSON junk should not normally be present.
+      }
+    }
+
+    if (newlineIndex === -1) {
       break;
-    } catch {
-      // Keep scanning; non-JSON junk should not normally be present.
     }
+
+    lineEnd = newlineIndex;
   }
 
-  if (lastJsonLine === -1) {
+  if (lastJsonStart === -1) {
     return { backupPath, updated: false, reason: "no JSON lines" };
   }
 
-  const record = JSON.parse(lines[lastJsonLine]);
+  const record = JSON.parse(lastJsonText);
   record.timestamp = new Date(updatedAtMs).toISOString();
-  lines[lastJsonLine] = JSON.stringify(record);
-  fsSync.writeFileSync(filePath, `${lines.join("\n")}${hasTrailingNewline ? "\n" : ""}`, "utf8");
+  const updatedLine = Buffer.from(JSON.stringify(record), "utf8");
+  let lineNumber = 1;
+  for (let index = 0; index < lastJsonStart; index += 1) {
+    if (originalBuffer[index] === 0x0a) {
+      lineNumber += 1;
+    }
+  }
+  fsSync.writeFileSync(
+    filePath,
+    Buffer.concat([
+      originalBuffer.subarray(0, lastJsonStart),
+      updatedLine,
+      originalBuffer.subarray(lastJsonContentEnd, lastJsonLineEnd),
+      originalBuffer.subarray(lastJsonLineEnd)
+    ])
+  );
 
   return {
     backupPath,
     updated: true,
-    line: lastJsonLine + 1
+    line: lineNumber
   };
 }
 
@@ -1209,7 +1238,7 @@ function pathArray(value) {
   return [];
 }
 
-function normalizePathForComparison(value) {
+function normalizePathForComparison(value, platform = process.platform) {
   if (typeof value !== "string") {
     return "";
   }
@@ -1219,15 +1248,24 @@ function normalizePathForComparison(value) {
     return "";
   }
 
-  const normalized = path.normalize(trimmed);
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  let normalized = path.normalize(trimmed);
+  if (platform === "win32") {
+    if (/^\\\\\?\\UNC\\/i.test(normalized)) {
+      normalized = `${String.fromCharCode(92, 92)}${normalized.slice(8)}`;
+    } else if (/^\\\\\?\\/i.test(normalized)) {
+      normalized = normalized.slice(4);
+    }
+    return normalized.toLowerCase();
+  }
+  return normalized;
 }
 
-function putPathFirst(paths, cwd) {
+function putPathFirst(paths, cwd, platform = process.platform) {
+  const targetPath = normalizePathForComparison(cwd, platform);
   const next = [cwd];
-  const seen = new Set([normalizePathForComparison(cwd)]);
+  const seen = new Set([targetPath]);
   for (const item of pathArray(paths)) {
-    const key = normalizePathForComparison(item);
+    const key = normalizePathForComparison(item, platform);
     if (!seen.has(key)) {
       seen.add(key);
       next.push(item);
@@ -1240,11 +1278,11 @@ function hasTruthyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function normalizeDesktopStateForProject(state, cwd) {
+function normalizeDesktopStateForProject(state, cwd, platform = process.platform) {
   const nextState = { ...state };
-  const nextProjectOrder = putPathFirst(nextState["project-order"], cwd);
-  const nextSavedRoots = putPathFirst(nextState["electron-saved-workspace-roots"], cwd);
-  const nextActiveRoots = putPathFirst(nextState["active-workspace-roots"], cwd);
+  const nextProjectOrder = putPathFirst(nextState["project-order"], cwd, platform);
+  const nextSavedRoots = putPathFirst(nextState["electron-saved-workspace-roots"], cwd, platform);
+  const nextActiveRoots = putPathFirst(nextState["active-workspace-roots"], cwd, platform);
   const remoteKeysToClear = ["selected-remote-host-id", "active-remote-project-id"];
   const clearedRemoteKeys = [];
 
@@ -1277,15 +1315,15 @@ function normalizeDesktopStateForProject(state, cwd) {
   };
 }
 
-function desktopStateMatchesProject(state, cwd) {
-  const targetPath = normalizePathForComparison(cwd);
-  if (normalizePathForComparison(pathArray(state["project-order"])[0]) !== targetPath) {
+function desktopStateMatchesProject(state, cwd, platform = process.platform) {
+  const targetPath = normalizePathForComparison(cwd, platform);
+  if (normalizePathForComparison(pathArray(state["project-order"])[0], platform) !== targetPath) {
     return false;
   }
-  if (normalizePathForComparison(pathArray(state["electron-saved-workspace-roots"])[0]) !== targetPath) {
+  if (normalizePathForComparison(pathArray(state["electron-saved-workspace-roots"])[0], platform) !== targetPath) {
     return false;
   }
-  if (normalizePathForComparison(pathArray(state["active-workspace-roots"])[0]) !== targetPath) {
+  if (normalizePathForComparison(pathArray(state["active-workspace-roots"])[0], platform) !== targetPath) {
     return false;
   }
   if (hasTruthyString(state["selected-remote-host-id"])) {
@@ -1952,7 +1990,12 @@ export {
   configuredProviderIds,
   explicitConfiguredProviderIds,
   configProviderDiagnostics,
-  renameProviderSectionInConfig
+  renameProviderSectionInConfig,
+  normalizePathForComparison,
+  putPathFirst,
+  normalizeDesktopStateForProject,
+  desktopStateMatchesProject,
+  updateRolloutUpdatedAtSync
 };
 
 const server = http.createServer(async (req, res) => {

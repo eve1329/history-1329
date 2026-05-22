@@ -49,14 +49,16 @@ assert.deepEqual(
 const originalState = {
   "project-order": [String.raw`\\?\C:\Users\ming\project`, String.raw`C:\Users\ming\project\older`],
   "electron-saved-workspace-roots": [String.raw`\\?\C:\Users\ming\project`],
-  "active-workspace-roots": [String.raw`\\?\C:\Users\ming\project`],
+  "active-workspace-roots": [String.raw`C:\Users\ming\other`],
   "selected-remote-host-id": "remote-1",
   "active-remote-project-id": "remote-project-1"
 };
 const normalized = normalizeDesktopStateForProject(originalState, String.raw`C:\Users\ming\project`, "win32");
 assert.deepEqual(normalized.nextState["project-order"][0], String.raw`C:\Users\ming\project`);
-assert.equal(normalized.nextState["selected-remote-host-id"], null);
-assert.equal(normalized.nextState["active-remote-project-id"], null);
+assert.deepEqual(normalized.nextState["electron-saved-workspace-roots"][0], String.raw`C:\Users\ming\project`);
+assert.deepEqual(normalized.nextState["active-workspace-roots"], [String.raw`C:\Users\ming\other`]);
+assert.equal(normalized.nextState["selected-remote-host-id"], "remote-1");
+assert.equal(normalized.nextState["active-remote-project-id"], "remote-project-1");
 assert.equal(desktopStateMatchesProject(normalized.nextState, String.raw`C:\Users\ming\project`, "win32"), true);
 
 const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "codex-rollout-test-"));

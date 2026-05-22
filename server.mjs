@@ -1282,9 +1282,6 @@ function normalizeDesktopStateForProject(state, cwd, platform = process.platform
   const nextState = { ...state };
   const nextProjectOrder = putPathFirst(nextState["project-order"], cwd, platform);
   const nextSavedRoots = putPathFirst(nextState["electron-saved-workspace-roots"], cwd, platform);
-  const nextActiveRoots = putPathFirst(nextState["active-workspace-roots"], cwd, platform);
-  const remoteKeysToClear = ["selected-remote-host-id", "active-remote-project-id"];
-  const clearedRemoteKeys = [];
 
   let changed = false;
   if (JSON.stringify(nextState["project-order"] ?? null) !== JSON.stringify(nextProjectOrder)) {
@@ -1295,23 +1292,11 @@ function normalizeDesktopStateForProject(state, cwd, platform = process.platform
     nextState["electron-saved-workspace-roots"] = nextSavedRoots;
     changed = true;
   }
-  if (JSON.stringify(nextState["active-workspace-roots"] ?? null) !== JSON.stringify(nextActiveRoots)) {
-    nextState["active-workspace-roots"] = nextActiveRoots;
-    changed = true;
-  }
-
-  for (const key of remoteKeysToClear) {
-    if (hasTruthyString(nextState[key])) {
-      nextState[key] = null;
-      clearedRemoteKeys.push(key);
-      changed = true;
-    }
-  }
 
   return {
     nextState,
     changed,
-    clearedRemoteKeys
+    clearedRemoteKeys: []
   };
 }
 
@@ -1321,15 +1306,6 @@ function desktopStateMatchesProject(state, cwd, platform = process.platform) {
     return false;
   }
   if (normalizePathForComparison(pathArray(state["electron-saved-workspace-roots"])[0], platform) !== targetPath) {
-    return false;
-  }
-  if (normalizePathForComparison(pathArray(state["active-workspace-roots"])[0], platform) !== targetPath) {
-    return false;
-  }
-  if (hasTruthyString(state["selected-remote-host-id"])) {
-    return false;
-  }
-  if (hasTruthyString(state["active-remote-project-id"])) {
     return false;
   }
   return true;
@@ -1362,15 +1338,6 @@ async function waitForDesktopStateStability(cwd, { timeoutMs = 2400, stableCheck
         }
         if (normalizePathForComparison(pathArray(state["electron-saved-workspace-roots"])[0]) !== normalizePathForComparison(cwd)) {
           mismatches.push("electron-saved-workspace-roots");
-        }
-        if (normalizePathForComparison(pathArray(state["active-workspace-roots"])[0]) !== normalizePathForComparison(cwd)) {
-          mismatches.push("active-workspace-roots");
-        }
-        if (hasTruthyString(state["selected-remote-host-id"])) {
-          mismatches.push("selected-remote-host-id");
-        }
-        if (hasTruthyString(state["active-remote-project-id"])) {
-          mismatches.push("active-remote-project-id");
         }
         lastReason = mismatches.length > 0 ? mismatches.join(", ") : "unknown";
       }
